@@ -26,7 +26,7 @@ One call to `ImageLoader.load(...)`. Spec entity: **Image request**.
 **State transitions** (all applied on the main thread):
 
 ```text
-load() ──► [memory hit with known size] ──► Displayed            (synchronous, no placeholder)
+load() ──► [fresh memory hit with known size] ──► Displayed      (synchronous, no placeholder)
    │
    └─► PlaceholderShown ──► AwaitingSize ──► Fetching ──► Decoding ──► Displayed
                 │                 │              │            │
@@ -39,6 +39,17 @@ load() ──► [memory hit with known size] ──► Displayed            (sy
 A result is applied only if the view's tag still holds this request's job. A cancelled request
 releases every reference to the view.
 
+### PixelSize
+
+| Field | Type | Rules |
+|-------|------|-------|
+| `width` | `Int` | > 0 |
+| `height` | `Int` | > 0 |
+
+`data class` in `ViewSize.kt`. It is the target size from `laidOutSizeOrNull()` / `awaitSize()`
+(padding removed, a dimension ≤ 0 replaced by the display's) and the result of
+`BitmapDecoder.coverSize`.
+
 ### MemoryKey
 
 | Field | Type | Rules |
@@ -49,24 +60,39 @@ releases every reference to the view.
 
 `data class`, the key of the memory cache.
 
+### MemoryEntry
+
+| Field | Type | Rules |
+|-------|------|-------|
+| `bitmap` | `Bitmap` | Decoded for the key's width and height |
+| `downloadedAtMillis` | `Long` | From the `FetchResult` the bitmap was decoded from |
+
+Plain class, the value of the memory cache.
+
 ### Memory cache
 
-`android.util.LruCache<MemoryKey, Bitmap>`.
+`android.util.LruCache<MemoryKey, MemoryEntry>`.
 
 - Capacity: `Runtime.getRuntime().maxMemory() / 8` bytes. Entry size:
-  `Bitmap.allocationByteCount`. Least recently used entries are evicted first (FR-014).
+  `bitmap.allocationByteCount`. Least recently used entries are evicted first (FR-014).
+- A lookup returns the entry only if it passes the disk validity rule below
+  (`DiskCache.isFresh(downloadedAtMillis, clock.nowMillis())`). An expired entry is removed, and
+  the lookup is a miss (FR-005, SC-003).
 - A put happens only when the request's generation equals the current generation.
 - `invalidateCache()` empties it with `evictAll()`.
 
 ### Disk cache entry (spec entity: **Cached image**)
 
-One file per URL in `<cacheDir>/image_loader/`.
+One file per URL in `<cacheDir>/image_loader/`. `DiskCache` receives the directory as a
+`Lazy<File>` and first resolves it on the disk dispatcher, so `ImageLoader.get()` does no disk I/O
+on the main thread. `get(url)` returns `DiskEntry(bytes, downloadedAtMillis)` (a plain class,
+because it holds an array) or `null` when the entry is absent.
 
 | Part | Type / size | Rules |
 |------|-------------|-------|
 | File name | `sha256(url)` as 64 lowercase hex chars + `.img` | Temp file while writing: same name + `.tmp` |
 | Magic | 4 bytes, ASCII `ILC1` | Any mismatch → corrupt |
-| `downloadedAtMillis` | 8 bytes, big-endian `Long` | Wall-clock time from the injected `Clock` when the download finished |
+| `downloadedAtMillis` | 8 bytes, big-endian `Long` | Wall-clock time from the injected `Clock` when the download finished, recorded by `ImageFetcher` and passed to `put(url, bytes, downloadedAtMillis)` |
 | Payload | rest of file | Original downloaded bytes. Must be non-empty |
 
 **Validity rule** (FR-003, FR-005, edge cases "Exactly 4 hours old" and "Device clock set back"):
@@ -74,6 +100,10 @@ One file per URL in `<cacheDir>/image_loader/`.
 ```text
 valid  ⇔  downloadedAtMillis ≤ now  AND  now < downloadedAtMillis + 14_400_000
 ```
+
+The rule is implemented once, as `DiskCache.isFresh(downloadedAtMillis, nowMillis)` with
+`DiskCache.TTL_MILLIS = 14_400_000` and `now = clock.nowMillis()`. Memory entries use the same
+function.
 
 **Lifecycle**:
 
@@ -102,7 +132,7 @@ read enqueued after it.
 |------|--------|-------|
 | `FetchKey` | `url: String`, `generation: Int` | `data class`. Key of the in-flight map |
 | `SharedFetch` | `deferred: Deferred<FetchResult>`, `waiters: Int` | `waiters` ≥ 1 while present in the map. At 0 the entry is removed and `deferred` is cancelled if still active |
-| `FetchResult` | `bytes: ByteArray`, `source: Source` | `Source` is `enum { DISK, NETWORK }`. A plain class, not a data class, because it holds an array |
+| `FetchResult` | `bytes: ByteArray`, `source: Source`, `downloadedAtMillis: Long` | `Source` is `enum { DISK, NETWORK }`. `downloadedAtMillis` is the disk header value for `DISK`, or the time the download finished for `NETWORK`. A plain class, not a data class, because it holds an array |
 
 Invariant (FR-009): for each `FetchKey`, at most one `SharedFetch` exists, so there is at most one
 download per URL per generation. A failed `SharedFetch` is never reused after its waiters leave

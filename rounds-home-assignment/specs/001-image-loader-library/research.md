@@ -117,8 +117,8 @@ construct (Constitution II).
 **Decision** (all on the main thread):
 
 1. Cancel the job stored in the view's tag (`R.id.imageloader_request`) (FR-007).
-2. If the view already has a laid-out size and the memory cache holds `(url, size)`, set the
-   bitmap synchronously and stop. This avoids placeholder flicker when scrolling back.
+2. If the view already has a laid-out size and the memory cache holds a fresh entry for
+   `(url, size)` (R9), set the bitmap synchronously and stop. This avoids placeholder flicker when scrolling back.
 3. Otherwise show the placeholder and launch the request job:
    - Scope: `owner.lifecycleScope` of `target.findViewTreeLifecycleOwner()`. If that is null,
      which happens for a `RecyclerView` row bound before attachment, use the first
@@ -226,28 +226,37 @@ deduplicated.
 
 ## R8. Disk cache
 
-**Decision**: `DiskCache(directory, maxBytes = 100 MB, clock)`, confined to a single serialized
-dispatcher (`ioDispatcher.limitedParallelism(1)`), so it needs no locks.
+**Decision**: `DiskCache(directory: Lazy<File>, clock, maxBytes = 100 MB)`, confined to a single
+serialized dispatcher (`ioDispatcher.limitedParallelism(1)`), so it needs no locks.
 
 - Location: `context.cacheDir/image_loader/`. This is app-private (FR-015) and survives restarts
-  (FR-004). The OS may trim it under storage pressure, which is fine for a cache.
+  (FR-004). The OS may trim it under storage pressure, which is fine for a cache. The directory
+  is passed as `lazy { File(appContext.cacheDir, "image_loader") }` and first resolved on the disk
+  dispatcher, because `Context.getCacheDir()` touches the disk and `ImageLoader.get()` runs on the
+  main thread.
 - File name: lowercase hex SHA-256 of the URL plus `.img`.
 - Format: a 4-byte magic `ILC1`, then an 8-byte big-endian `downloadedAtMillis`, then the
   original image bytes.
-- `get(url, now)`: read the file. Bad magic, a short file or an `IOException` mean the entry is
-  absent, and it is deleted. Valid only if `downloadedAt <= now < downloadedAt + 4 h`. Otherwise
-  the entry is deleted and returns absent. This covers "exactly 4 hours" (expired) and "clock set
-  back" (expired).
-- `put(url, bytes, now)`: write to `<name>.tmp`, then `renameTo(<name>.img)`. On any
-  `IOException`, such as a full disk, delete the temp file, log, and carry on. The caller still
-  displays the bytes (edge case "Storage full").
+- `get(url): DiskEntry?`, where `DiskEntry(bytes, downloadedAtMillis)`: read the file. Bad magic,
+  a short file, an empty payload or an `IOException` mean the entry is absent, and it is deleted.
+  Valid only if `downloadedAt <= now < downloadedAt + 4 h`, with `now = clock.nowMillis()`.
+  Otherwise the entry is deleted and returns absent. This covers "exactly 4 hours" (expired) and
+  "clock set back" (expired). The download time is returned so the memory cache can apply the
+  same rule (R9).
+- `put(url, bytes, downloadedAtMillis)`: `ImageFetcher` records `clock.nowMillis()` when the
+  download finishes and passes it in, so the disk entry and the memory entry share one download
+  time. Write to `<name>.tmp`, then `renameTo(<name>.img)`. On any `IOException`, such as a full
+  disk, delete the temp file, log, and carry on. The caller still displays the bytes (edge case
+  "Storage full").
 - LRU: an in-memory `LinkedHashMap<String, Long>(accessOrder = true)` index of file name to size.
   It is built lazily on first use by listing the directory (deleting stray `.tmp` files) and
   ordering by `lastModified()`, which approximates recency across restarts. A put that pushes the
   total above `maxBytes` deletes the eldest entries (FR-014). An entry larger than `maxBytes` is
   not stored.
 - `remove(url)` and `clear()` delete the files and the index entries.
-- The TTL is a private constant (`4 h = 14_400_000 ms`), fixed per the spec Assumptions.
+- The TTL is a constant (`DiskCache.TTL_MILLIS = 14_400_000`, 4 h), fixed per the spec
+  Assumptions. `DiskCache.isFresh(downloadedAtMillis, nowMillis)` holds the validity rule, and the
+  memory cache uses it too (R9).
 
 **Rationale**: a header holds the download time without relying on `File.setLastModified`,
 which fails on some Android filesystems, and it works with an injected clock. Temp file plus
@@ -257,7 +266,9 @@ rename is atomic within one directory (Constitution V). Serial confinement also 
 **Alternatives considered**: a journal (DiskLruCache style) is more robust but too large for
 this scope. A sidecar metadata file doubles the files per entry and adds failure modes.
 Encoding the timestamp in the file name makes keyed lookup depend on a directory scan.
-`filesDir` would never be trimmed by the OS, but caches belong in `cacheDir`.
+`filesDir` would never be trimmed by the OS, but caches belong in `cacheDir`. Passing the
+directory as a plain `File` was rejected because computing it in `ImageLoader.get()` is disk I/O
+on the main thread.
 
 **Size choice**: the current list totals about 40 MB across 45 images. 100 MB holds all of it
 with room to spare and is modest for a phone. Glide's default is 250 MB.
@@ -266,23 +277,33 @@ with room to spare and is modest for a phone. Glide's default is 250 MB.
 
 ## R9. Memory cache
 
-**Decision**: `android.util.LruCache<MemoryKey, Bitmap>` with `maxSize = Runtime.maxMemory() / 8`
-bytes and `sizeOf = bitmap.allocationByteCount`. `MemoryKey(url, width, height)` is the target
-size the bitmap was decoded for. A bitmap larger than the whole cache is simply not retained,
-which `LruCache` handles itself.
+**Decision**: `android.util.LruCache<MemoryKey, MemoryEntry>` with
+`maxSize = Runtime.maxMemory() / 8` bytes and `sizeOf = entry.bitmap.allocationByteCount`.
+`MemoryKey(url, width, height)` is the target size the bitmap was decoded for.
+`MemoryEntry(bitmap, downloadedAtMillis)` keeps the download time from the `FetchResult` (R10). A
+lookup returns the entry only if `DiskCache.isFresh(downloadedAtMillis, clock.nowMillis())`.
+Otherwise it removes the entry, and the request continues as a miss. A bitmap larger than the
+whole cache is simply not retained, which `LruCache` handles itself.
 
 **Rationale**: this follows the platform's bitmap-caching guidance and is bounded (FR-014,
-Constitution V). Keying by size keeps a small thumbnail from being reused for a large view.
+Constitution V). Keying by size keeps a small thumbnail from being reused for a large view. The
+4-hour validity applies to every cache, not just the disk (FR-003, FR-005, G4). A process that
+stays alive past 4 hours, or whose clock is changed, must not keep showing images from memory
+(SC-003, quickstart row 9).
 
 **Alternatives considered**: `androidx.collection.LruCache` was rejected because it adds a
 dependency and Bitmap tests need Robolectric anyway. Keying by URL only would show
-wrong-resolution bitmaps for views of different sizes.
+wrong-resolution bitmaps for views of different sizes. Storing bitmaps without a timestamp was
+rejected because memory hits would outlive the 4-hour validity. Clearing the memory cache on a
+timer was rejected because it needs a scheduled job and still misses clock changes.
 
 ---
 
 ## R10. Download deduplication and cancellation
 
-**Decision**: `ImageFetcher.fetch(url, generation): FetchResult(bytes, source = DISK | NETWORK)`.
+**Decision**: `ImageFetcher.fetch(url, generation): FetchResult(bytes, source = DISK | NETWORK,
+downloadedAtMillis)`. The download time is the disk header value for `DISK`, or the time the
+download finished for `NETWORK`.
 
 - An in-flight map `FetchKey(url, generation) → SharedFetch(deferred, waiters)` is guarded by
   `synchronized` (short, non-suspending critical sections).
