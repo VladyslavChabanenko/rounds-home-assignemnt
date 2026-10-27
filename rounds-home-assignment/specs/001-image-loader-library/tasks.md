@@ -232,8 +232,8 @@ forward (or back before the download) downloads everything again (quickstart row
 
 ### Tests for User Story 2 ⚠️
 
-- [ ] T038 [P] [US2] Create `imageloader/src/main/java/io/github/vladyslavchabanenko/imageloader/Clock.kt` (`internal fun interface Clock { fun nowMillis(): Long }`) and `imageloader/src/test/kotlin/io/github/vladyslavchabanenko/imageloader/fakes/FakeClock.kt` (`class FakeClock(var now: Long = 1_000_000L) : Clock`, plus `fun advanceBy(millis: Long)`)
-- [ ] T039 [P] [US2] Write `imageloader/src/test/kotlin/io/github/vladyslavchabanenko/imageloader/DiskCacheTest.kt` (plain JUnit, `TemporaryFolder`, `FakeClock`, `maxBytes` of a few hundred bytes for the LRU cases) covering FR-003–006, 014, 015:
+- [X] T038 [P] [US2] Create `imageloader/src/main/java/io/github/vladyslavchabanenko/imageloader/Clock.kt` (`internal fun interface Clock { fun nowMillis(): Long }`) and `imageloader/src/test/kotlin/io/github/vladyslavchabanenko/imageloader/fakes/FakeClock.kt` (`class FakeClock(var now: Long = 1_000_000L) : Clock`, plus `fun advanceBy(millis: Long)`)
+- [X] T039 [P] [US2] Write `imageloader/src/test/kotlin/io/github/vladyslavchabanenko/imageloader/DiskCacheTest.kt` (plain JUnit, `TemporaryFolder`, `FakeClock`, `maxBytes` of a few hundred bytes for the LRU cases) covering FR-003–006, 014, 015:
   - `DiskCache.isFresh`: fresh at `downloadedAt`, fresh 1 ms before +4 h, expired exactly at +4 h, expired when `now < downloadedAt`
   - `get` returns the bytes and `downloadedAtMillis` while fresh. At +4 h, and when the clock is set back before the download time, it returns `null` and the file is deleted
   - a new `DiskCache` instance on the same directory returns the entry (persists across restarts)
@@ -242,7 +242,7 @@ forward (or back before the download) downloads everything again (quickstart row
   - LRU: puts beyond `maxBytes` evict the least recently used entries, and a `get` refreshes recency. An entry larger than `maxBytes` is not stored
   - `remove(url)` deletes one entry, and `clear()` deletes every file
   - with a `Lazy<File>` whose parent is a regular file, so writes fail, `put` does not throw and leaves no entry
-- [ ] T040 [US2] Implement `imageloader/src/main/java/io/github/vladyslavchabanenko/imageloader/DiskCache.kt` per research R8 and deviations 1–3, and make `DiskCacheTest` pass:
+- [X] T040 [US2] Implement `imageloader/src/main/java/io/github/vladyslavchabanenko/imageloader/DiskCache.kt` per research R8 and deviations 1–3, and make `DiskCacheTest` pass:
   - `internal class DiskEntry(val bytes: ByteArray, val downloadedAtMillis: Long)` and `internal class DiskCache(directory: Lazy<File>, clock: Clock, maxBytes: Long = 100L * 1024 * 1024)`. It is not thread-safe, and the KDoc says every call must run on the serialized disk dispatcher
   - File name: SHA-256 of the URL as lowercase hex plus `.img`. The temp file is `<name>.tmp`. Format: magic `ILC1`, big-endian `Long` `downloadedAtMillis`, then the payload
   - `get(url): DiskEntry?` validates with `isFresh(downloadedAt, clock.nowMillis())`. Corrupt, expired or unreadable entries are deleted and return `null`. A hit refreshes the index order and calls `setLastModified(now)` as a best effort
@@ -250,33 +250,33 @@ forward (or back before the download) downloads everything again (quickstart row
   - `remove(url)` and `clear()` delete the files and the index entries, and catch and log `IOException`, so they never throw
   - The index is a `LinkedHashMap<String, Long>(16, 0.75f, true)`, built lazily on first use by listing the directory, deleting `*.tmp` files and inserting `.img` files by ascending `lastModified()`
   - `companion object { const val TTL_MILLIS = 14_400_000L; fun isFresh(downloadedAtMillis: Long, nowMillis: Long): Boolean = downloadedAtMillis <= nowMillis && nowMillis < downloadedAtMillis + TTL_MILLIS }`
-- [ ] T041 [P] [US2] Write `imageloader/src/test/kotlin/io/github/vladyslavchabanenko/imageloader/ImageFetcherTest.kt` (plain JUnit and `runTest`, with a real `DiskCache` on `TemporaryFolder`, `FakeClock` and `FakeDownloader`). Use `StandardTestDispatcher(testScheduler)` as the disk dispatcher and `backgroundScope` as the fetcher scope. Cases (FR-005, 009, 012; SC-005):
+- [X] T041 [P] [US2] Write `imageloader/src/test/kotlin/io/github/vladyslavchabanenko/imageloader/ImageFetcherTest.kt` (plain JUnit and `runTest`, with a real `DiskCache` on `TemporaryFolder`, `FakeClock` and `FakeDownloader`). Use `StandardTestDispatcher(testScheduler)` as the disk dispatcher and `backgroundScope` as the fetcher scope. Cases (FR-005, 009, 012; SC-005):
   - two concurrent `fetch(url)` calls while the download is gated make one download and both get the same bytes with source `NETWORK`
   - a fresh disk entry gives source `DISK`, its `downloadedAtMillis`, and 0 downloads. A miss downloads once and writes the bytes with `downloadedAtMillis = clock.now`
   - a failed download throws to every waiter and writes nothing, and the next `fetch` downloads again
   - cancelling the only waiter cancels the download (`cancelledCount == 1`). Cancelling one of two waiters does not, and the other completes with one download
   - when the disk write fails (unwritable directory), `fetch` still returns the bytes
   - after a shared fetch fails, a new `fetch` downloads again even while another waiter of the failed fetch has not resumed (launch that waiter on a separate `StandardTestDispatcher` so it stays paused)
-- [ ] T042 [US2] Implement `imageloader/src/main/java/io/github/vladyslavchabanenko/imageloader/ImageFetcher.kt` per research R10, and make `ImageFetcherTest` pass:
+- [X] T042 [US2] Implement `imageloader/src/main/java/io/github/vladyslavchabanenko/imageloader/ImageFetcher.kt` per research R10, and make `ImageFetcherTest` pass:
   - `internal enum class Source { DISK, NETWORK }` and `internal class FetchResult(val bytes: ByteArray, val source: Source, val downloadedAtMillis: Long)`
   - `internal class ImageFetcher(downloader: Downloader, diskCache: DiskCache, clock: Clock, diskDispatcher: CoroutineDispatcher, scope: CoroutineScope)`
   - `suspend fun fetch(url: String): FetchResult`: inside `synchronized(inFlight)`, take or create a `SharedFetch(deferred = scope.async { diskOrNetwork(url) })` in `inFlight: HashMap<String, SharedFetch>` and increment `waiters`. Then `await()`. In `finally`, under the same lock, decrement `waiters`. At 0, remove the entry (only if it is still this one) and `deferred.cancel()`
   - Also remove the entry when its deferred completes (`deferred.invokeOnCompletion`, under the same lock, only if it is still this one), so a later `fetch` never joins a finished or failed fetch (research R10)
   - `diskOrNetwork`: run `withContext(diskDispatcher) { diskCache.get(url) }` and return `DISK` on a hit. Otherwise call `downloader.download(url)`, take `now = clock.nowMillis()`, run `withContext(diskDispatcher) { diskCache.put(url, bytes, now) }`, and return `NETWORK`
-- [ ] T043 [US2] Extend `imageloader/src/test/kotlin/io/github/vladyslavchabanenko/imageloader/ImageLoaderTest.kt` for US2. Update `createLoader()` to pass a `DiskCache` (`lazyOf(temporaryFolder.root)`), a `FakeClock`, a memory size of 32 MB and the test dispatcher as IO. Cases (FR-003–005, 009, 012, 014; SC-003, 005):
+- [X] T043 [US2] Extend `imageloader/src/test/kotlin/io/github/vladyslavchabanenko/imageloader/ImageLoaderTest.kt` for US2. Update `createLoader()` to pass a `DiskCache` (`lazyOf(temporaryFolder.root)`), a `FakeClock`, a memory size of 32 MB and the test dispatcher as IO. Cases (FR-003–005, 009, 012, 014; SC-003, 005):
   - after one load completes, a second load of the same URL into the same view after `relayout()` shows the bitmap synchronously (the placeholder is never set) with 1 download in total
   - after `clock.advanceBy(4 h)`, the next load shows the placeholder and downloads again
   - a new `ImageLoader` on the same directory and clock (a "restart") loads with 0 new downloads
   - two views loading the same URL concurrently make 1 download and both show the image. Views of different sizes also share the single download
   - non-image bytes show the error image, remove the disk entry, and the next load downloads again
   - a disk entry with a valid header but a non-image payload (seeded with the test's `DiskCache.put`) is removed, and the same request downloads and shows the image (1 download, no error image)
-- [ ] T044 [US2] Update `imageloader/src/main/java/io/github/vladyslavchabanenko/imageloader/ImageLoader.kt` for caching (research R4 step 2, R6, R8, R9, deviations 1–2), and make every library test pass:
+- [X] T044 [US2] Update `imageloader/src/main/java/io/github/vladyslavchabanenko/imageloader/ImageLoader.kt` for caching (research R4 step 2, R6, R8, R9, deviations 1–2), and make every library test pass:
   - The internal constructor becomes `(downloader: Downloader, diskCache: DiskCache, clock: Clock, memoryCacheMaxBytes: Int, mainDispatcher, ioDispatcher, defaultDispatcher)`, with `private val diskDispatcher = ioDispatcher.limitedParallelism(1)` and `private val fetcher = ImageFetcher(downloader, diskCache, clock, diskDispatcher, libraryScope)`
   - Memory cache: `internal data class MemoryKey(val url: String, val width: Int, val height: Int)`, `internal class MemoryEntry(val bitmap: Bitmap, val downloadedAtMillis: Long)`, and `LruCache<MemoryKey, MemoryEntry>(memoryCacheMaxBytes)` with `sizeOf` = `bitmap.allocationByteCount`. A lookup returns the entry only if `DiskCache.isFresh(entry.downloadedAtMillis, clock.nowMillis())`, otherwise it removes it
   - In `load()`, after cancelling the previous job: if `target.laidOutSizeOrNull()` gives a size whose `MemoryKey` hits, call `setImageBitmap`, clear the tag and return without showing the placeholder (G1)
   - Job body: `awaitSize()`, then a memory lookup, otherwise `fetcher.fetch(url)`, decode, `memoryCache.put(key, MemoryEntry(bitmap, result.downloadedAtMillis))`, and apply. On `InvalidImageException`, keep `libraryScope.launch(diskDispatcher) { diskCache.remove(url) }`. Then, if `result.source == DISK` and the request has not retried yet, fetch again: the serialized disk dispatcher runs the remove first, so the read misses and the image downloads. Otherwise show the error fallback. (T050's generation loop also handles this one retry.)
   - `get()` wires `DiskCache(lazy { File(appContext.cacheDir, "image_loader") }, Clock { System.currentTimeMillis() })`, `(Runtime.getRuntime().maxMemory() / 8).toInt()` and `Dispatchers.IO`
-- [ ] T045 [US2] Validate US2: `./gradlew build` passes. Then install the app and walk rows 2, 7, 8 and 9 of `specs/001-image-loader-library/quickstart.md`, counting downloads with `adb logcat -s ImageLoader`
+- [X] T045 [US2] Validate US2: `./gradlew build` passes. Then install the app and walk rows 2, 7, 8 and 9 of `specs/001-image-loader-library/quickstart.md`, counting downloads with `adb logcat -s ImageLoader`
 
 **Checkpoint**: US1 and US2 work. Scrolling back is instant, and restarts reuse the disk cache.
 

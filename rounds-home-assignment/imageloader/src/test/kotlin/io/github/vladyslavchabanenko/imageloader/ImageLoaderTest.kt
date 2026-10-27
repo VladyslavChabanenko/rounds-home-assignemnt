@@ -11,6 +11,7 @@ import android.widget.ImageView
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.setViewTreeLifecycleOwner
 import androidx.test.core.app.ApplicationProvider
+import io.github.vladyslavchabanenko.imageloader.fakes.FakeClock
 import io.github.vladyslavchabanenko.imageloader.fakes.FakeDownloader
 import io.github.vladyslavchabanenko.imageloader.fakes.FakeLifecycleOwner
 import io.github.vladyslavchabanenko.imageloader.fakes.LifecycleContext
@@ -22,10 +23,13 @@ import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.TemporaryFolder
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.GraphicsMode
@@ -34,25 +38,35 @@ import java.io.IOException
 @RunWith(RobolectricTestRunner::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class ImageLoaderTest {
+    @get:Rule
+    val temporaryFolder = TemporaryFolder()
+
     private val context: Context = ApplicationProvider.getApplicationContext()
     private val downloader = FakeDownloader()
+    private val clock = FakeClock()
     private val owner = FakeLifecycleOwner()
     private val placeholder = ColorDrawable(Color.GRAY)
     private val errorDrawable = ColorDrawable(Color.MAGENTA)
     private val url = "https://example.test/first.jpg"
     private val otherUrl = "https://example.test/second.jpg"
 
-    private fun TestScope.createLoader(): ImageLoader {
+    private val diskCache by lazy { newDiskCache() }
+
+    private fun newDiskCache() = DiskCache(lazy { temporaryFolder.root }, clock)
+
+    private fun TestScope.createLoader(cache: DiskCache = diskCache): ImageLoader {
         val dispatcher = StandardTestDispatcher(testScheduler)
-        return ImageLoader(downloader, dispatcher, dispatcher)
+        return ImageLoader(downloader, cache, clock, MEMORY_CACHE_BYTES, dispatcher, dispatcher, dispatcher)
     }
 
     private fun newImageView(
         viewContext: Context = context,
         treeOwner: LifecycleOwner? = owner,
+        width: Int = VIEW_WIDTH,
+        height: Int = VIEW_HEIGHT,
     ): ImageView =
         ImageView(viewContext).apply {
-            layout(0, 0, VIEW_WIDTH, VIEW_HEIGHT)
+            layout(0, 0, width, height)
             treeOwner?.let { setViewTreeLifecycleOwner(it) }
         }
 
@@ -60,12 +74,15 @@ class ImageLoaderTest {
      * Setting a drawable of another intrinsic size calls requestLayout(), and layout() with the
      * same bounds notifies no listener unless measure() ran first.
      */
-    private fun ImageView.relayout() {
+    private fun ImageView.relayout(
+        width: Int = VIEW_WIDTH,
+        height: Int = VIEW_HEIGHT,
+    ) {
         measure(
-            MeasureSpec.makeMeasureSpec(VIEW_WIDTH, MeasureSpec.EXACTLY),
-            MeasureSpec.makeMeasureSpec(VIEW_HEIGHT, MeasureSpec.EXACTLY),
+            MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
+            MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY),
         )
-        layout(0, 0, VIEW_WIDTH, VIEW_HEIGHT)
+        layout(0, 0, width, height)
     }
 
     private fun ImageView.shownBitmap() = (drawable as BitmapDrawable).bitmap
@@ -171,9 +188,10 @@ class ImageLoaderTest {
             val withoutDrawable = newImageView()
             val withoutResource = newImageView()
             downloader.fail(url, IOException("HTTP 403"))
+            downloader.fail(otherUrl, IOException("HTTP 403"))
 
             loader.load(url, withoutDrawable, placeholder)
-            loader.load(url, withoutResource, android.R.drawable.ic_menu_gallery, 0)
+            loader.load(otherUrl, withoutResource, android.R.drawable.ic_menu_gallery, 0)
             val resourcePlaceholder = withoutResource.drawable
             withoutDrawable.relayout()
             withoutResource.relayout()
@@ -181,7 +199,8 @@ class ImageLoaderTest {
 
             assertSame(placeholder, withoutDrawable.drawable)
             assertSame(resourcePlaceholder, withoutResource.drawable)
-            assertEquals(2, downloader.callCount(url))
+            assertEquals(1, downloader.callCount(url))
+            assertEquals(1, downloader.callCount(otherUrl))
         }
 
     @Test
@@ -295,8 +314,121 @@ class ImageLoaderTest {
             assertTrue(view.shownBitmap().width >= VIEW_WIDTH)
         }
 
+    private fun TestScope.loadAndSettle(
+        loader: ImageLoader,
+        view: ImageView,
+        imageUrl: String = url,
+    ) {
+        loader.load(imageUrl, view, placeholder, errorDrawable)
+        view.relayout()
+        advanceUntilIdle()
+    }
+
+    @Test
+    fun aSecondLoadOfTheSameImageShowsItFromMemoryAtOnceWithoutAPlaceholder() =
+        runTest {
+            val loader = createLoader()
+            val view = newImageView()
+            downloader.succeed(url, jpegBytes(400, 200, Color.RED))
+            loadAndSettle(loader, view)
+            val firstBitmap = view.shownBitmap()
+
+            view.relayout()
+            loader.load(url, view, placeholder, errorDrawable)
+
+            assertSame(firstBitmap, view.shownBitmap())
+            advanceUntilIdle()
+            assertEquals(1, downloader.callCount(url))
+        }
+
+    @Test
+    fun afterFourHoursTheNextLoadShowsThePlaceholderAndDownloadsAgain() =
+        runTest {
+            val loader = createLoader()
+            val view = newImageView()
+            downloader.succeed(url, jpegBytes(400, 200, Color.RED))
+            loadAndSettle(loader, view)
+
+            clock.advanceBy(DiskCache.TTL_MILLIS)
+            view.relayout()
+            loader.load(url, view, placeholder, errorDrawable)
+            assertSame(placeholder, view.drawable)
+            view.relayout()
+            advanceUntilIdle()
+
+            assertEquals(2, downloader.callCount(url))
+            assertMostlyRed(view)
+        }
+
+    @Test
+    fun aRestartedLoaderServesFromDiskWithoutDownloading() =
+        runTest {
+            downloader.succeed(url, jpegBytes(400, 200, Color.RED))
+            loadAndSettle(createLoader(), newImageView())
+            val restarted = createLoader(newDiskCache())
+            val view = newImageView()
+
+            loadAndSettle(restarted, view)
+
+            assertEquals(1, downloader.callCount(url))
+            assertMostlyRed(view)
+        }
+
+    @Test
+    fun viewsLoadingTheSameUrlShareOneDownloadEvenAtDifferentSizes() =
+        runTest {
+            val loader = createLoader()
+            val large = newImageView()
+            val small = newImageView(width = 100, height = 50)
+            val gate = downloader.gate(url)
+
+            loader.load(url, large, placeholder, errorDrawable)
+            loader.load(url, small, placeholder, errorDrawable)
+            large.relayout()
+            small.relayout(width = 100, height = 50)
+            advanceUntilIdle()
+            gate.complete(jpegBytes(1920, 1080, Color.BLUE))
+            advanceUntilIdle()
+
+            assertEquals(1, downloader.callCount(url))
+            assertMostlyBlue(large)
+            assertMostlyBlue(small)
+            assertTrue(small.shownBitmap().width < large.shownBitmap().width)
+        }
+
+    @Test
+    fun nonImageBytesShowTheErrorImageRemoveTheDiskEntryAndAreDownloadedAgain() =
+        runTest {
+            val loader = createLoader()
+            val view = newImageView()
+            downloader.succeed(url, "not an image".toByteArray())
+
+            loadAndSettle(loader, view)
+
+            assertSame(errorDrawable, view.drawable)
+            assertNull(diskCache.get(url))
+            loadAndSettle(loader, view)
+            assertEquals(2, downloader.callCount(url))
+        }
+
+    @Test
+    fun aDiskEntryThatIsNotAnImageIsRemovedAndTheImageIsDownloaded() =
+        runTest {
+            val loader = createLoader()
+            val view = newImageView()
+            diskCache.put(url, "not an image".toByteArray(), clock.now)
+            downloader.succeed(url, jpegBytes(400, 200, Color.RED))
+
+            loadAndSettle(loader, view)
+
+            assertEquals(1, downloader.callCount(url))
+            assertNotSame(errorDrawable, view.drawable)
+            assertMostlyRed(view)
+        }
+
     private companion object {
         const val VIEW_WIDTH = 200
         const val VIEW_HEIGHT = 100
+        const val MEMORY_CACHE_BYTES = 32 * 1024 * 1024
     }
 }

@@ -2,8 +2,10 @@ package io.github.vladyslavchabanenko.imageloader
 
 import android.content.Context
 import android.content.ContextWrapper
+import android.graphics.Bitmap
 import android.graphics.drawable.Drawable
 import android.util.Log
+import android.util.LruCache
 import android.widget.ImageView
 import androidx.annotation.DrawableRes
 import androidx.annotation.MainThread
@@ -21,17 +23,34 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 
 /**
  * Downloads images into [ImageView]s, with a memory cache and a disk cache valid for 4 hours.
  * Obtain the process-wide instance with [get].
  */
 public class ImageLoader internal constructor(
-    private val downloader: Downloader,
+    downloader: Downloader,
+    private val diskCache: DiskCache,
+    private val clock: Clock,
+    memoryCacheMaxBytes: Int,
     private val mainDispatcher: CoroutineDispatcher,
+    ioDispatcher: CoroutineDispatcher,
     private val defaultDispatcher: CoroutineDispatcher,
 ) {
     private val libraryScope = CoroutineScope(SupervisorJob() + mainDispatcher)
+
+    // One thread at a time, in order, so DiskCache needs no locks and a clear() runs before later reads.
+    private val diskDispatcher = ioDispatcher.limitedParallelism(1)
+    private val fetcher = ImageFetcher(downloader, diskCache, clock, diskDispatcher, libraryScope)
+
+    private val memoryCache =
+        object : LruCache<MemoryKey, MemoryEntry>(memoryCacheMaxBytes) {
+            override fun sizeOf(
+                key: MemoryKey,
+                value: MemoryEntry,
+            ): Int = value.bitmap.allocationByteCount
+        }
 
     /**
      * Shows [placeholderResId] in [target] immediately, then the image at [url] once it is ready.
@@ -63,6 +82,13 @@ public class ImageLoader internal constructor(
         error: Drawable? = null,
     ) {
         (target.getTag(R.id.imageloader_request) as? Job)?.cancel()
+
+        val cached = target.laidOutSizeOrNull()?.let { lookUpMemory(MemoryKey(url, it.width, it.height)) }
+        if (cached != null) {
+            target.setImageBitmap(cached.bitmap)
+            target.setTag(R.id.imageloader_request, null)
+            return
+        }
         target.setImageDrawable(placeholder)
 
         val owner = target.findViewTreeLifecycleOwner() ?: target.context.findLifecycleOwner()
@@ -75,8 +101,7 @@ public class ImageLoader internal constructor(
                 try {
                     val size = target.awaitSize()
                     treeOwnerWatch = cancelWhenTreeOwnerDestroyed(target, owner, self)
-                    val bytes = downloader.download(url)
-                    val bitmap = withContext(defaultDispatcher) { BitmapDecoder.decode(bytes, size.width, size.height) }
+                    val bitmap = loadBitmap(url, size)
                     if (isCurrent()) target.setImageBitmap(bitmap)
                 } catch (e: CancellationException) {
                     throw e
@@ -89,6 +114,36 @@ public class ImageLoader internal constructor(
             }
         target.setTag(R.id.imageloader_request, job)
         job.start()
+    }
+
+    /** The bitmap from memory, else decoded from the fetched bytes. Bytes from disk that are not an image are fetched once more. */
+    private suspend fun loadBitmap(
+        url: String,
+        size: PixelSize,
+    ): Bitmap {
+        val key = MemoryKey(url, size.width, size.height)
+        lookUpMemory(key)?.let { return it.bitmap }
+        var retried = false
+        while (true) {
+            val result = fetcher.fetch(url)
+            try {
+                val bitmap = withContext(defaultDispatcher) { BitmapDecoder.decode(result.bytes, size.width, size.height) }
+                memoryCache.put(key, MemoryEntry(bitmap, result.downloadedAtMillis))
+                return bitmap
+            } catch (e: InvalidImageException) {
+                // Queued on the serialized disk dispatcher before the next fetch reads the disk.
+                libraryScope.launch(diskDispatcher) { diskCache.remove(url) }
+                if (result.source != Source.DISK || retried) throw e
+                retried = true
+            }
+        }
+    }
+
+    private fun lookUpMemory(key: MemoryKey): MemoryEntry? {
+        val entry = memoryCache.get(key) ?: return null
+        if (DiskCache.isFresh(entry.downloadedAtMillis, clock.nowMillis())) return entry
+        memoryCache.remove(key)
+        return null
     }
 
     /**
@@ -118,6 +173,7 @@ public class ImageLoader internal constructor(
     /** Access to the process-wide instance. */
     public companion object {
         private const val TAG = "ImageLoader"
+        private const val CACHE_DIRECTORY = "image_loader"
 
         @Volatile
         private var instance: ImageLoader? = null
@@ -126,11 +182,34 @@ public class ImageLoader internal constructor(
         @JvmStatic
         public fun get(context: Context): ImageLoader =
             instance ?: synchronized(this) {
-                instance ?: ImageLoader(
-                    HttpDownloader(Dispatchers.IO),
-                    Dispatchers.Main,
-                    Dispatchers.Default,
-                ).also { instance = it }
+                instance ?: run {
+                    val appContext = context.applicationContext
+                    val clock = Clock { System.currentTimeMillis() }
+                    val diskCache = DiskCache(lazy { File(appContext.cacheDir, CACHE_DIRECTORY) }, clock)
+                    val memoryCacheBytes = (Runtime.getRuntime().maxMemory() / 8).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+                    ImageLoader(
+                        HttpDownloader(Dispatchers.IO),
+                        diskCache,
+                        clock,
+                        memoryCacheBytes,
+                        Dispatchers.Main,
+                        Dispatchers.IO,
+                        Dispatchers.Default,
+                    )
+                }.also { instance = it }
             }
     }
 }
+
+/** A decoded bitmap is cached per URL and per the size of the view it was decoded for. */
+internal data class MemoryKey(
+    val url: String,
+    val width: Int,
+    val height: Int,
+)
+
+/** A decoded bitmap and the download time of the bytes it came from, which ends its validity. */
+internal class MemoryEntry(
+    val bitmap: Bitmap,
+    val downloadedAtMillis: Long,
+)
