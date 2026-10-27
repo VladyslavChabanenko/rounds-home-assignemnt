@@ -40,7 +40,19 @@
 
 *GATE: Must pass before Phase 0 research. Re-check after Phase 1 design.*
 
-[Gates determined based on constitution file]
+- [ ] **I. Modularity**: reusable code lives in library modules used only via their public API;
+  explicit API mode; library deps limited to Android SDK, AndroidX, kotlinx.coroutines (others
+  justified)
+- [ ] **II. Java interop**: public library API is Java-friendly (non-`suspend` entry points, no
+  Kotlin-only types); a Java call site is planned for each library
+- [ ] **III. Coroutines**: all async work in owned scopes with injected dispatchers; superseded
+  work is cancelled; no `GlobalScope`/threads/RxJava
+- [ ] **IV. MVVM + Views**: XML + ViewBinding, no Compose; ViewModel exposes `StateFlow` UI state
+- [ ] **V. Main-thread & resources**: no main-thread I/O; bounded caches; closed resources;
+  atomic file writes; library failures contained
+- [ ] **VI. Tests**: required unit tests identified (library behavior incl. time, concurrency and
+  failure paths; parsing; ViewModels)
+- [ ] **VII. Simplicity**: nothing beyond the spec; every new dependency justified
 
 ## Project Structure
 
