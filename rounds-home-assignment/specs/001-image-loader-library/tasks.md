@@ -98,36 +98,36 @@ and the app's debug StrictMode.
 
 **⚠️ CRITICAL**: no user story work can begin until this phase is complete.
 
-- [ ] T011 [P] Write `imageloader/src/test/kotlin/io/github/vladyslavchabanenko/imageloader/HttpDownloaderTest.kt` (plain JUnit and `runTest`). Start a `mockwebserver3.MockWebServer` in `@Before` and close it in `@After`. Build `HttpDownloader(Dispatchers.IO, connectTimeoutMillis = 10_000, readTimeoutMillis = 10_000)` for every case except the stall case, so those timeouts are never reached. Cases:
+- [X] T011 [P] Write `imageloader/src/test/kotlin/io/github/vladyslavchabanenko/imageloader/HttpDownloaderTest.kt` (plain JUnit and `runTest`). Start a `mockwebserver3.MockWebServer` in `@Before` and close it in `@After`. Build `HttpDownloader(Dispatchers.IO, connectTimeoutMillis = 10_000, readTimeoutMillis = 10_000)` for every case except the stall case, so those timeouts are never reached. Cases:
   - 200 with `Content-Length` returns the exact bytes. 200 with a chunked body (no `Content-Length`) also returns the exact bytes
   - 403 and 500 throw `IOException` (FR-011)
   - stall: with `readTimeoutMillis = 200`, a body that sends one chunk and then pauses 2 s (`MockResponse.Builder().throttleBody(…, 2, TimeUnit.SECONDS)`) throws `IOException` (FR-013). The 10× margin keeps it deterministic
   - cancelling the calling job while a long body throttled to one small chunk every 50 ms is being read ends the job as cancelled well before the body would finish
-- [ ] T012 Implement `imageloader/src/main/java/io/github/vladyslavchabanenko/imageloader/HttpDownloader.kt` per research R7, and make `HttpDownloaderTest` pass:
+- [X] T012 Implement `imageloader/src/main/java/io/github/vladyslavchabanenko/imageloader/HttpDownloader.kt` per research R7, and make `HttpDownloaderTest` pass:
   - `internal fun interface Downloader { suspend fun download(url: String): ByteArray }`
   - `internal class HttpDownloader(ioDispatcher: CoroutineDispatcher, connectTimeoutMillis: Int = 30_000, readTimeoutMillis: Int = 30_000) : Downloader`
   - It runs in `withContext(ioDispatcher)`, uses `HttpURLConnection` with both timeouts, and throws `IOException("HTTP <code>")` outside 2xx
   - It reads in 8 KiB chunks with `ensureActive()` between chunks. When `contentLengthLong >= 0` it fills an exact-size `ByteArray`, otherwise a growing buffer
   - Streams are closed with `use {}`, and `disconnect()` is called in `finally`
   - Each network download logs `Log.d("ImageLoader", "download $url")` (G11, quickstart row 2)
-- [ ] T013 [P] Implement `imageloader/src/main/java/io/github/vladyslavchabanenko/imageloader/ViewSize.kt` per research R5:
+- [X] T013 [P] Implement `imageloader/src/main/java/io/github/vladyslavchabanenko/imageloader/ViewSize.kt` per research R5:
   - `internal data class PixelSize(val width: Int, val height: Int)`
   - `internal fun View.laidOutSizeOrNull(): PixelSize?`: when `isLaidOut && !isLayoutRequested`, returns width and height minus padding. A dimension ≤ 0 is replaced by `resources.displayMetrics.widthPixels` or `heightPixels`. Otherwise returns `null`
   - `internal suspend fun View.awaitSize(): PixelSize`: returns `laidOutSizeOrNull()`, or suspends in `suspendCancellableCoroutine` with a `View.OnLayoutChangeListener`. The listener removes itself and resumes with a size computed from the new width and height. Do not re-check `isLaidOut` there, because the platform sets it only after the listeners run. `invokeOnCancellation` removes the listener
-- [ ] T014 [P] Create the test helper `imageloader/src/test/kotlin/io/github/vladyslavchabanenko/imageloader/fakes/TestImages.kt` with `fun jpegBytes(width: Int, height: Int, color: Int = Color.RED): ByteArray`. It fills a `Bitmap` with `color` and compresses it to JPEG. It works only under Robolectric `@GraphicsMode(GraphicsMode.Mode.NATIVE)`
-- [ ] T015 Write `imageloader/src/test/kotlin/io/github/vladyslavchabanenko/imageloader/BitmapDecoderTest.kt` with `@RunWith(RobolectricTestRunner::class)` and `@GraphicsMode(GraphicsMode.Mode.NATIVE)`. This is the first Robolectric test. Add `imageloader/src/test/resources/robolectric.properties` with `sdk=34`, so Robolectric runs on JDK 17 as well as newer JDKs (runtimes for SDK 36+ need JDK 21). Prove it once by running `./gradlew :imageloader:testDebugUnitTest` with `JAVA_HOME` set to the JDK 17 install. Cases:
+- [X] T014 [P] Create the test helper `imageloader/src/test/kotlin/io/github/vladyslavchabanenko/imageloader/fakes/TestImages.kt` with `fun jpegBytes(width: Int, height: Int, color: Int = Color.RED): ByteArray`. It fills a `Bitmap` with `color` and compresses it to JPEG. It works only under Robolectric `@GraphicsMode(GraphicsMode.Mode.NATIVE)`
+- [X] T015 Write `imageloader/src/test/kotlin/io/github/vladyslavchabanenko/imageloader/BitmapDecoderTest.kt` with `@RunWith(RobolectricTestRunner::class)` and `@GraphicsMode(GraphicsMode.Mode.NATIVE)`. This is the first Robolectric test. Add `imageloader/src/test/resources/robolectric.properties` with `sdk=34`, so Robolectric runs on JDK 17 as well as newer JDKs (runtimes for SDK 36+ need JDK 21). Prove it once by running `./gradlew :imageloader:testDebugUnitTest` with `JAVA_HOME` set to the JDK 17 install. Cases:
   - `calculateInSampleSize`: 4000×3000 into 1080×600 gives 2, a source smaller than the target gives 1, and an exact power-of-two boundary gives the larger sample size
   - `coverSize`: never upscales, keeps the aspect ratio, and covers both target dimensions
   - decoding `jpegBytes(1920, 1080)` for a 540×300 target gives a bitmap that covers 540×300 and is no larger than `coverSize`
   - non-image bytes and empty bytes throw `InvalidImageException`
-- [ ] T016 Implement `imageloader/src/main/java/io/github/vladyslavchabanenko/imageloader/BitmapDecoder.kt` per research R6, and make `BitmapDecoderTest` pass:
+- [X] T016 Implement `imageloader/src/main/java/io/github/vladyslavchabanenko/imageloader/BitmapDecoder.kt` per research R6, and make `BitmapDecoderTest` pass:
   - `internal class InvalidImageException(message: String) : Exception(message)`
   - `internal object BitmapDecoder` with `fun decode(bytes: ByteArray, targetWidth: Int, targetHeight: Int): Bitmap`. It does a bounds pass (non-positive dimensions throw `InvalidImageException`), then an ARGB_8888 decode with `calculateInSampleSize` (a `null` result throws `InvalidImageException`). If the result is still larger than `coverSize`, it applies `Bitmap.createScaledBitmap` down to `coverSize` and recycles the intermediate bitmap
   - pure functions `calculateInSampleSize(srcWidth, srcHeight, reqWidth, reqHeight): Int` and `coverSize(srcWidth, srcHeight, reqWidth, reqHeight): PixelSize`
-- [ ] T017 [P] Create `imageloader/src/test/kotlin/io/github/vladyslavchabanenko/imageloader/fakes/FakeDownloader.kt`, which implements `Downloader`:
+- [X] T017 [P] Create `imageloader/src/test/kotlin/io/github/vladyslavchabanenko/imageloader/fakes/FakeDownloader.kt`, which implements `Downloader`:
   - scripted responses per URL: `succeed(url, bytes)`, `fail(url, exception)`, and `gate(url): CompletableDeferred<ByteArray>`, which keeps the call suspended until the test completes the deferred
   - `callCount(url)`, plus `cancelledCount(url)`, which counts calls that ended with `CancellationException` (rethrown)
-- [ ] T018 [P] Create `app/src/main/java/io/github/vladyslavchabanenko/imageloader/sample/SampleApplication.kt`. `onCreate` calls `StrictMode.setThreadPolicy(ThreadPolicy.Builder().detectAll().penaltyLog().build())` when `BuildConfig.DEBUG` (Constitution V). Register it with `android:name=".SampleApplication"` in `app/src/main/AndroidManifest.xml`
+- [X] T018 [P] Create `app/src/main/java/io/github/vladyslavchabanenko/imageloader/sample/SampleApplication.kt`. `onCreate` calls `StrictMode.setThreadPolicy(ThreadPolicy.Builder().detectAll().penaltyLog().build())` when `BuildConfig.DEBUG` (Constitution V). Register it with `android:name=".SampleApplication"` in `app/src/main/AndroidManifest.xml`
 
 **Checkpoint**: `./gradlew build` passes, and the downloader and decoder are tested.
 
