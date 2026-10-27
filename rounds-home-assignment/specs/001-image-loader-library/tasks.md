@@ -98,11 +98,11 @@ and the app's debug StrictMode.
 
 **⚠️ CRITICAL**: no user story work can begin until this phase is complete.
 
-- [ ] T011 [P] Write `imageloader/src/test/kotlin/io/github/vladyslavchabanenko/imageloader/HttpDownloaderTest.kt` (plain JUnit and `runTest`). Start a `mockwebserver3.MockWebServer` in `@Before` and close it in `@After`. Build `HttpDownloader(Dispatchers.IO, connectTimeoutMillis = 200, readTimeoutMillis = 200)`. Cases:
+- [ ] T011 [P] Write `imageloader/src/test/kotlin/io/github/vladyslavchabanenko/imageloader/HttpDownloaderTest.kt` (plain JUnit and `runTest`). Start a `mockwebserver3.MockWebServer` in `@Before` and close it in `@After`. Build `HttpDownloader(Dispatchers.IO, connectTimeoutMillis = 10_000, readTimeoutMillis = 10_000)` for every case except the stall case, so those timeouts are never reached. Cases:
   - 200 with `Content-Length` returns the exact bytes. 200 with a chunked body (no `Content-Length`) also returns the exact bytes
   - 403 and 500 throw `IOException` (FR-011)
-  - a body throttled below the 200 ms read timeout (`MockResponse.Builder().throttleBody(...)`) throws `IOException` (FR-013)
-  - cancelling the calling job while a long throttled body is being read ends the job as cancelled well before the body would finish
+  - stall: with `readTimeoutMillis = 200`, a body that sends one chunk and then pauses 2 s (`MockResponse.Builder().throttleBody(…, 2, TimeUnit.SECONDS)`) throws `IOException` (FR-013). The 10× margin keeps it deterministic
+  - cancelling the calling job while a long body throttled to one small chunk every 50 ms is being read ends the job as cancelled well before the body would finish
 - [ ] T012 Implement `imageloader/src/main/java/io/github/vladyslavchabanenko/imageloader/HttpDownloader.kt` per research R7, and make `HttpDownloaderTest` pass:
   - `internal fun interface Downloader { suspend fun download(url: String): ByteArray }`
   - `internal class HttpDownloader(ioDispatcher: CoroutineDispatcher, connectTimeoutMillis: Int = 30_000, readTimeoutMillis: Int = 30_000) : Downloader`
@@ -115,7 +115,7 @@ and the app's debug StrictMode.
   - `internal fun View.laidOutSizeOrNull(): PixelSize?`: when `isLaidOut && !isLayoutRequested`, returns width and height minus padding. A dimension ≤ 0 is replaced by `resources.displayMetrics.widthPixels` or `heightPixels`. Otherwise returns `null`
   - `internal suspend fun View.awaitSize(): PixelSize`: returns `laidOutSizeOrNull()`, or suspends in `suspendCancellableCoroutine` with a `View.OnLayoutChangeListener`. The listener removes itself and resumes with a size computed from the new width and height. Do not re-check `isLaidOut` there, because the platform sets it only after the listeners run. `invokeOnCancellation` removes the listener
 - [ ] T014 [P] Create the test helper `imageloader/src/test/kotlin/io/github/vladyslavchabanenko/imageloader/fakes/TestImages.kt` with `fun jpegBytes(width: Int, height: Int, color: Int = Color.RED): ByteArray`. It fills a `Bitmap` with `color` and compresses it to JPEG. It works only under Robolectric `@GraphicsMode(GraphicsMode.Mode.NATIVE)`
-- [ ] T015 Write `imageloader/src/test/kotlin/io/github/vladyslavchabanenko/imageloader/BitmapDecoderTest.kt` with `@RunWith(RobolectricTestRunner::class)` and `@GraphicsMode(GraphicsMode.Mode.NATIVE)`. This is the first Robolectric test. If Robolectric cannot start the module's SDK on the build JDK (an unsupported SDK, or `UnsupportedClassVersionError`), add `imageloader/src/test/resources/robolectric.properties` with the highest `sdk=` that runs, and note it in research.md R1. Cases:
+- [ ] T015 Write `imageloader/src/test/kotlin/io/github/vladyslavchabanenko/imageloader/BitmapDecoderTest.kt` with `@RunWith(RobolectricTestRunner::class)` and `@GraphicsMode(GraphicsMode.Mode.NATIVE)`. This is the first Robolectric test. Add `imageloader/src/test/resources/robolectric.properties` with `sdk=34`, so Robolectric runs on JDK 17 as well as newer JDKs (runtimes for SDK 36+ need JDK 21). Prove it once by running `./gradlew :imageloader:testDebugUnitTest` with `JAVA_HOME` set to the JDK 17 install. Cases:
   - `calculateInSampleSize`: 4000×3000 into 1080×600 gives 2, a source smaller than the target gives 1, and an exact power-of-two boundary gives the larger sample size
   - `coverSize`: never upscales, keeps the aspect ratio, and covers both target dimensions
   - decoding `jpegBytes(1920, 1080)` for a 540×300 target gives a bitmap that covers 540×300 and is no larger than `coverSize`
@@ -150,7 +150,7 @@ Rotation keeps the list (quickstart rows 1, 3, 4, 5, 6).
   - `class FakeLifecycleOwner(initialState: Lifecycle.State = Lifecycle.State.RESUMED) : LifecycleOwner`, backed by a `LifecycleRegistry` (created on the Robolectric main thread), with `fun destroy()` moving it to `DESTROYED`
   - `class LifecycleContext(base: Context, owner: LifecycleOwner) : ContextWrapper(base), LifecycleOwner by owner`, for the context fallback test
 - [ ] T020 [US1] Write `imageloader/src/test/kotlin/io/github/vladyslavchabanenko/imageloader/ImageLoaderTest.kt` (FR-001, 002, 007, 008, 010, 011):
-  - Setup: `@RunWith(RobolectricTestRunner::class)`, `@GraphicsMode(NATIVE)` and `runTest`. A private `createLoader()` helper builds `ImageLoader` through its internal constructor with `FakeDownloader` and `StandardTestDispatcher(testScheduler)` as the main and default dispatchers. Later stories change only this helper. The target is an `ImageView(ApplicationProvider.getApplicationContext())` with `layout(0, 0, 200, 100)` and `setViewTreeLifecycleOwner(FakeLifecycleOwner())`. Use `ColorDrawable`s as placeholder and error drawables (assert identity) and `android.R.drawable.*` ids for the resource overload. Advance with `advanceUntilIdle()`, and also idle the Robolectric main looper if needed
+  - Setup: `@RunWith(RobolectricTestRunner::class)`, `@GraphicsMode(NATIVE)` and `runTest`. A private `createLoader()` helper builds `ImageLoader` through its internal constructor with `FakeDownloader` and `StandardTestDispatcher(testScheduler)` as the main and default dispatchers. Later stories change only this helper. The target is an `ImageView(ApplicationProvider.getApplicationContext())` with `layout(0, 0, 200, 100)` and `setViewTreeLifecycleOwner(FakeLifecycleOwner())`. Use `ColorDrawable`s as placeholder and error drawables (assert identity) and `android.R.drawable.*` ids for the resource overload. Advance with `advanceUntilIdle()`, and also idle the Robolectric main looper if needed. Add a private `ImageView.relayout()` helper: `measure(makeMeasureSpec(200, EXACTLY), makeMeasureSpec(100, EXACTLY))`, then `layout(0, 0, 200, 100)`. Setting a drawable of a different intrinsic size calls `requestLayout()`, so after `load()` shows the placeholder, `laidOutSizeOrNull()` returns null and `awaitSize()` waits. An unattached view gets no layout pass, and `layout()` with unchanged bounds does not notify listeners without `measure()`. Call `relayout()` after each `load()` that should proceed and before any synchronous memory-hit assertion
   - The placeholder is set synchronously by both overloads, before any dispatcher advances
   - On success, the view shows a `BitmapDrawable` that covers 200×100 and is not larger than the cover size of the source
   - On download failure and on non-image bytes, the error drawable is shown. With `errorResId = 0` or `error = null`, the placeholder stays. Nothing is thrown
@@ -158,7 +158,8 @@ Rotation keeps the list (quickstart rows 1, 3, 4, 5, 6).
   - `FakeLifecycleOwner.destroy()` during a gated download cancels the download and leaves the placeholder
   - A load into a view whose owner is already destroyed never calls the downloader
   - A view without a view-tree owner, created with a `LifecycleContext`, is cancelled when that owner is destroyed (R4 fallback)
-  - A view that is not laid out yet does not download until `layout()` is called, and then decodes at that size
+  - Fragment case: a view with no view-tree owner, created with a `LifecycleContext` (owner A), gets view-tree owner B (`setViewTreeLifecycleOwner(B)`) before it is laid out. Destroying B during a gated download cancels the download (`cancelledCount == 1`) and leaves the placeholder, while A stays `RESUMED`
+  - A view that is not laid out yet does not download until `relayout()` is called, and then decodes at that size
 - [ ] T021 [P] [US1] Write `app/src/test/java/io/github/vladyslavchabanenko/imageloader/sample/data/ImageListParserTest.kt`, with the fixture `app/src/test/resources/image_list.json`. Download the fixture once (`curl -fsSL https://zipoapps-storage-test.nyc3.digitaloceanspaces.com/image_list.json -o app/src/test/resources/image_list.json`). Tests never use the network. Cases:
   - the fixture parses to 50 entries with ids 0–49 in order and 45 distinct URLs, so duplicates are kept
   - `[]` gives an empty list, and unknown keys are ignored
@@ -178,6 +179,7 @@ Rotation keeps the list (quickstart rows 1, 3, 4, 5, 6).
   - Both public `load` overloads have exactly the contract's signatures, KDoc and annotations (`@MainThread`, `@JvmOverloads`, `@DrawableRes`). The resource overload resolves drawables with `target.context.getDrawable(id)` (`errorResId == 0` means no error image) and delegates to the `Drawable` overload
   - Request start: cancel `target.getTag(R.id.imageloader_request) as? Job`, then `target.setImageDrawable(placeholder)`. Pick the scope in this order: `target.findViewTreeLifecycleOwner()?.lifecycleScope`, then the first `LifecycleOwner` found by unwrapping `ContextWrapper.baseContext` from `target.context`, then `libraryScope`. Then `val job = scope.launch(mainDispatcher, start = CoroutineStart.LAZY) { … }`, `target.setTag(R.id.imageloader_request, job)` and `job.start()`
   - Job body: `target.awaitSize()`, then `downloader.download(url)`, then `withContext(defaultDispatcher) { BitmapDecoder.decode(...) }`. Call `target.setImageBitmap(bitmap)` only if the tag is still `coroutineContext[Job]`. Rethrow `CancellationException`. For any other `Exception`, show `error` if one was given (otherwise keep the placeholder) and `Log.w("ImageLoader", "Failed to load $url", e)`
+  - Remember the owner whose scope was chosen. Right after `awaitSize()`, if `target.findViewTreeLifecycleOwner()` is non-null and is a different owner, register `treeOwner.lifecycleScope.coroutineContext.job.invokeOnCompletion { job.cancel() }` and call `dispose()` on the handle in `finally` (research R4)
   - `public companion object { @JvmStatic public fun get(context: Context): ImageLoader }` with KDoc: a lazily created, thread-safe singleton (double-checked locking on a `@Volatile` field) built from `context.applicationContext` with `HttpDownloader(Dispatchers.IO)`, `Dispatchers.Main` and `Dispatchers.Default`. This is the only place in the library that names `Dispatchers.*`
 - [ ] T026 [US1] Run `./gradlew :imageloader:testDebugUnitTest`. `HttpDownloaderTest`, `BitmapDecoderTest` and `ImageLoaderTest` must pass, and the report under `imageloader/build/reports/tests/` must list them, which confirms that `src/test/kotlin` is compiled
 
@@ -220,7 +222,7 @@ Rotation keeps the list (quickstart rows 1, 3, 4, 5, 6).
 **Goal**: downloaded images are reused from memory and disk for 4 hours from download, including
 after restart. Concurrent requests for one URL share one download. Failures are not cached.
 
-**Independent Test**: after one full scroll, logcat shows 45 `download` lines. Rows seen before
+**Independent Test**: after one unhurried full scroll, logcat shows 45 `download` lines. Rows seen before
 still show in airplane mode. Reopening within 4 hours downloads nothing. Moving the clock 4 hours
 forward (or back before the download) downloads everything again (quickstart rows 2, 7, 8, 9).
 
@@ -250,22 +252,25 @@ forward (or back before the download) downloads everything again (quickstart row
   - a failed download throws to every waiter and writes nothing, and the next `fetch` downloads again
   - cancelling the only waiter cancels the download (`cancelledCount == 1`). Cancelling one of two waiters does not, and the other completes with one download
   - when the disk write fails (unwritable directory), `fetch` still returns the bytes
+  - after a shared fetch fails, a new `fetch` downloads again even while another waiter of the failed fetch has not resumed (launch that waiter on a separate `StandardTestDispatcher` so it stays paused)
 - [ ] T042 [US2] Implement `imageloader/src/main/java/io/github/vladyslavchabanenko/imageloader/ImageFetcher.kt` per research R10, and make `ImageFetcherTest` pass:
   - `internal enum class Source { DISK, NETWORK }` and `internal class FetchResult(val bytes: ByteArray, val source: Source, val downloadedAtMillis: Long)`
   - `internal class ImageFetcher(downloader: Downloader, diskCache: DiskCache, clock: Clock, diskDispatcher: CoroutineDispatcher, scope: CoroutineScope)`
   - `suspend fun fetch(url: String): FetchResult`: inside `synchronized(inFlight)`, take or create a `SharedFetch(deferred = scope.async { diskOrNetwork(url) })` in `inFlight: HashMap<String, SharedFetch>` and increment `waiters`. Then `await()`. In `finally`, under the same lock, decrement `waiters`. At 0, remove the entry (only if it is still this one) and `deferred.cancel()`
+  - Also remove the entry when its deferred completes (`deferred.invokeOnCompletion`, under the same lock, only if it is still this one), so a later `fetch` never joins a finished or failed fetch (research R10)
   - `diskOrNetwork`: run `withContext(diskDispatcher) { diskCache.get(url) }` and return `DISK` on a hit. Otherwise call `downloader.download(url)`, take `now = clock.nowMillis()`, run `withContext(diskDispatcher) { diskCache.put(url, bytes, now) }`, and return `NETWORK`
 - [ ] T043 [US2] Extend `imageloader/src/test/kotlin/io/github/vladyslavchabanenko/imageloader/ImageLoaderTest.kt` for US2. Update `createLoader()` to pass a `DiskCache` (`lazyOf(temporaryFolder.root)`), a `FakeClock`, a memory size of 32 MB and the test dispatcher as IO. Cases (FR-003–005, 009, 012, 014; SC-003, 005):
-  - after one load completes, a second load of the same URL into a laid-out view of the same size shows the bitmap synchronously (the placeholder is never set) with 1 download in total
+  - after one load completes, a second load of the same URL into the same view after `relayout()` shows the bitmap synchronously (the placeholder is never set) with 1 download in total
   - after `clock.advanceBy(4 h)`, the next load shows the placeholder and downloads again
   - a new `ImageLoader` on the same directory and clock (a "restart") loads with 0 new downloads
   - two views loading the same URL concurrently make 1 download and both show the image. Views of different sizes also share the single download
   - non-image bytes show the error image, remove the disk entry, and the next load downloads again
+  - a disk entry with a valid header but a non-image payload (seeded with the test's `DiskCache.put`) is removed, and the same request downloads and shows the image (1 download, no error image)
 - [ ] T044 [US2] Update `imageloader/src/main/java/io/github/vladyslavchabanenko/imageloader/ImageLoader.kt` for caching (research R4 step 2, R6, R8, R9, deviations 1–2), and make every library test pass:
   - The internal constructor becomes `(downloader: Downloader, diskCache: DiskCache, clock: Clock, memoryCacheMaxBytes: Int, mainDispatcher, ioDispatcher, defaultDispatcher)`, with `private val diskDispatcher = ioDispatcher.limitedParallelism(1)` and `private val fetcher = ImageFetcher(downloader, diskCache, clock, diskDispatcher, libraryScope)`
   - Memory cache: `internal data class MemoryKey(val url: String, val width: Int, val height: Int)`, `internal class MemoryEntry(val bitmap: Bitmap, val downloadedAtMillis: Long)`, and `LruCache<MemoryKey, MemoryEntry>(memoryCacheMaxBytes)` with `sizeOf` = `bitmap.allocationByteCount`. A lookup returns the entry only if `DiskCache.isFresh(entry.downloadedAtMillis, clock.nowMillis())`, otherwise it removes it
   - In `load()`, after cancelling the previous job: if `target.laidOutSizeOrNull()` gives a size whose `MemoryKey` hits, call `setImageBitmap`, clear the tag and return without showing the placeholder (G1)
-  - Job body: `awaitSize()`, then a memory lookup, otherwise `fetcher.fetch(url)`, decode, `memoryCache.put(key, MemoryEntry(bitmap, result.downloadedAtMillis))`, and apply. On `InvalidImageException`, `libraryScope.launch(diskDispatcher) { diskCache.remove(url) }` before the error fallback
+  - Job body: `awaitSize()`, then a memory lookup, otherwise `fetcher.fetch(url)`, decode, `memoryCache.put(key, MemoryEntry(bitmap, result.downloadedAtMillis))`, and apply. On `InvalidImageException`, keep `libraryScope.launch(diskDispatcher) { diskCache.remove(url) }`. Then, if `result.source == DISK` and the request has not retried yet, fetch again: the serialized disk dispatcher runs the remove first, so the read misses and the image downloads. Otherwise show the error fallback. (T050's generation loop also handles this one retry.)
   - `get()` wires `DiskCache(lazy { File(appContext.cacheDir, "image_loader") }, Clock { System.currentTimeMillis() })`, `(Runtime.getRuntime().maxMemory() / 8).toInt()` and `Dispatchers.IO`
 - [ ] T045 [US2] Validate US2: `./gradlew build` passes. Then install the app and walk rows 2, 7, 8 and 9 of `specs/001-image-loader-library/quickstart.md`, counting downloads with `adb logcat -s ImageLoader`
 
@@ -334,7 +339,7 @@ interop test. The app is the Kotlin caller.
 ### Implementation for User Story 4
 
 - [ ] T058 [US4] Check the public surface of `imageloader/src/main/java/io/github/vladyslavchabanenko/imageloader/ImageLoader.kt` against `contracts/image-loader-api.md`. Run `javap -public` on the compiled class (find it with `find imageloader/build -name ImageLoader.class`). It must show exactly the static `get` and the four `load` and one `invalidateCache` signatures from the contract. Every public declaration must have KDoc, and no `suspend`, `Result`, `Duration` or function type may appear. Fix any mismatch
-- [ ] T059 [P] [US4] Write the library half of `README.md`: what the library does; Kotlin and Java usage (from `contracts/image-loader-api.md`); behavioral guarantees G1–G11 grouped by threading, errors, lifecycle and caching (4 h TTL, memory 1/8 heap, disk 100 MB, `invalidateCache()`); the Fragment limitation from research R4; and the "Explicitly not provided" list
+- [ ] T059 [P] [US4] Write the library half of `README.md`: what the library does; Kotlin and Java usage (from `contracts/image-loader-api.md`); behavioral guarantees G1–G11 grouped by threading, errors, lifecycle and caching (4 h TTL, memory 1/8 heap, disk 100 MB, `invalidateCache()`); the ownership rule from research R4; and the "Explicitly not provided" list
 
 **Checkpoint**: all four stories are complete.
 
@@ -462,5 +467,5 @@ Workflow).
 - `ImageLoader.kt`, `ImageFetcher.kt`, `ImageLoaderTest.kt` and the app UI files are extended
   across stories. Do those tasks in ID order
 - Any change to the public API must match `contracts/image-loader-api.md` exactly
-- Tests never use the real network or real time. The only real-time waits are the 200 ms socket
-  timeouts against the local MockWebServer in `HttpDownloaderTest`
+- Tests never use the real network or real time. The only real-time wait is the stall case in
+  `HttpDownloaderTest` (a 200 ms timeout against a 2 s pause)

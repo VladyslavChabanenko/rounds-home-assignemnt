@@ -69,9 +69,10 @@ app has been closed and reopened.
 **Why this priority**: Caching with a 4-hour validity is an explicit requirement and is what
 separates an image *loader* from a plain download.
 
-**Independent Test**: Load the list online, then turn off the network and reopen the app (with
-the list available). The previously loaded images still appear. Then simulate the passage of more
-than 4 hours and confirm the images are downloaded again.
+**Independent Test**: Load the list online and scroll through it. Turn off the network and scroll
+back: the previously loaded images still appear. Restart the app online: those images appear
+without being downloaded again. Then simulate the passage of more than 4 hours and confirm the
+images are downloaded again.
 
 **Acceptance Scenarios**:
 
@@ -247,18 +248,23 @@ workaround code.
 - **SC-001**: On a typical mobile connection, the list of ids appears within 3 seconds of opening
   the app, and from then on every visible row shows either a placeholder or its own image, never
   an empty slot or another entry's image.
-- **SC-002**: Within 4 hours of loading the list, reopening the app with the network off shows
-  100% of the previously loaded images.
+- **SC-002**: Within 4 hours of loading the list, (a) with the network turned off while the list
+  is shown, 100% of the previously loaded images still display, and (b) after the app restarts
+  online, 0 previously loaded images are downloaded again.
 - **SC-003**: No image older than 4 hours is ever shown from the cache. This is verified by
   simulating the passage of time, with zero failures.
 - **SC-004**: After the invalidate control is tapped, 0 images cached before the tap are shown.
   Every image displayed afterwards comes from a new download.
-- **SC-005**: Loading the full published list makes at most one download per distinct image
-  address (45 downloads for the current 50 entries).
+- **SC-005**: Scrolling once through the full published list, letting each visible row finish,
+  starts exactly one download per distinct image address (45 for the current 50 entries).
+  Repeated addresses and rows scrolled back to never start a second download while the image is in
+  flight or cached. Only failed addresses (retried per FR-012) and downloads abandoned because no
+  row needs them any more (FR-008) start again.
 - **SC-006**: Scrolling the full list top to bottom and back 10 times in a row causes no crash,
   no out-of-memory failure (including the ~24 MB image) and no "app not responding" prompt.
-- **SC-007**: Entries whose images cannot be loaded show the error image within 30 seconds, and
-  the app does not crash in any of these cases.
+- **SC-007**: Entries whose images cannot be loaded show the error image no more than 30 seconds
+  after the connection attempt or the last data received (a refused request shows it at once),
+  and the app does not crash in any of these cases.
 - **SC-008**: Sample callers written in Kotlin and in Java each load an image with an address, a
   placeholder and a target view in a single call, and each invalidate the cache in a single call.
 

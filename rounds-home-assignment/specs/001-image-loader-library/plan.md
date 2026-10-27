@@ -47,7 +47,7 @@ the download time, then the original image bytes), plus an in-memory `LruCache` 
 bitmaps. App: none. The list lives in the ViewModel only (spec Assumptions: no offline list).
 
 **Testing**: JUnit 4.13.2, kotlinx-coroutines-test 1.11.0, Robolectric 4.17 (views, bitmaps and
-the Java interop test on the JVM), androidx.test:core 1.7.0, OkHttp `mockwebserver3` 5.5.1 (HTTP
+the Java interop test on the JVM; tests pinned to SDK 34 so JDK 17 works), androidx.test:core 1.7.0, OkHttp `mockwebserver3` 5.5.1 (HTTP
 client tests only). Everything runs with `./gradlew test`. There are no instrumented tests
 (Constitution VI: optional, and the spec does not require them).
 
@@ -90,9 +90,11 @@ Notes per gate:
     in the API. A Java test, `ImageLoaderJavaInteropTest.java`, calls every public method.
 - [x] **III. Coroutines**: all async work in owned scopes with injected dispatchers; superseded
   work is cancelled; no `GlobalScope`/threads/RxJava
-  - Requests run in the target view's `lifecycleScope` (cancelled on `ON_DESTROY`), or in the
-    library's `SupervisorJob` scope when the view has no lifecycle owner. Shared downloads run in
-    the library scope and are cancelled when their last waiter leaves. Main, IO and Default
+  - Requests run in the target view's `lifecycleScope` (cancelled on `ON_DESTROY`), before
+    attachment in the context owner's scope, or in the library's `SupervisorJob` scope when there
+    is no owner. Once the view is laid out, its view-tree owner's `ON_DESTROY` also cancels the
+    request (research R4). Shared downloads run in the library scope and are cancelled when their
+    last waiter leaves. Main, IO and Default
     dispatchers are constructor parameters, and `ImageLoader.get()` is the only place that names
     `Dispatchers.*`. A new `load()` on a view cancels the view's previous request. Catch-all
     blocks rethrow `CancellationException`.
@@ -113,8 +115,10 @@ Notes per gate:
 - [x] **VI. Tests**: required unit tests identified (library behavior incl. time, concurrency and
   failure paths; parsing; ViewModels)
   - See [Test Strategy](#test-strategy). The clock, downloader and dispatchers are injectable.
-    Coroutine tests use `runTest`, and no test uses real time or the real network (MockWebServer
-    is local).
+    Coroutine tests use `runTest`, and no test uses the real network (MockWebServer is local).
+    `HttpDownloaderTest` is the only test that waits in real time, because socket timeouts cannot
+    be faked: its stall case waits for a 200 ms timeout against a 2 s pause, and its other cases
+    use 10 s timeouts that are never reached.
 - [x] **VII. Simplicity**: nothing beyond the spec; every new dependency justified
   - No request handles, transformations, crossfades, configurable TTL, HTTP cache headers or
     per-URL invalidation. Each abstraction (`Downloader`, `Clock`, `ImageListDataSource`) exists

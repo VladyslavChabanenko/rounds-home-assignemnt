@@ -21,7 +21,7 @@ One call to `ImageLoader.load(...)`. Spec entity: **Image request**.
 | `placeholder` | `Drawable` | Required. A resource ID is resolved via `target.context.getDrawable(id)` |
 | `error` | `Drawable?` | Optional. `null` (or resource ID `0`) keeps the placeholder on failure |
 | `generation` | `Int` | The loader's cache generation when the request started (see Cache generation) |
-| `job` | `Job` | Child of the target's `lifecycleScope` (or of the library scope when there is no lifecycle owner) |
+| `job` | `Job` | Child of the view-tree owner's `lifecycleScope`, else the context owner's, else the library scope. Once the size is known, the view-tree owner's `ON_DESTROY` also cancels it |
 
 **State transitions** (all applied on the main thread):
 
@@ -30,8 +30,9 @@ load() ──► [fresh memory hit with known size] ──► Displayed      (sy
    │
    └─► PlaceholderShown ──► AwaitingSize ──► Fetching ──► Decoding ──► Displayed
                 │                 │              │            │
-                │                 │              │            └─► (source=DISK && generation stale) ──► restart at Fetching
-                │                 │              │                                                      with current generation
+                │                 │              │            ├─► (source=DISK && generation stale) ──► restart at Fetching
+                │                 │              │            │                                         with current generation
+                │                 │              │            └─► (source=DISK && undecodable) ──► remove entry, restart at Fetching (once)
                 ├─────────────────┴──────────────┴──► Failed: show error, or keep placeholder (logged)
                 └─► Cancelled (new load() on target, or lifecycle ON_DESTROY): view untouched, nothing applied
 ```

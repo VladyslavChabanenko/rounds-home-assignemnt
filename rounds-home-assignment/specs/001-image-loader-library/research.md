@@ -23,7 +23,7 @@ distinct URL was requested with HEAD to measure sizes.
 | kotlinx.serialization | 1.12.0 | `:app` only |
 | AndroidX | core-ktx 1.19.1, appcompat 1.8.0, activity-ktx 1.13.0, lifecycle 2.11.0, recyclerview 1.4.0, annotation 1.11.0 | Latest stable |
 | Material Components | 1.14.0 | Material 3 theme, `MaterialToolbar` |
-| Test | junit 4.13.2, robolectric 4.17, androidx.test:core 1.7.0, mockwebserver3 5.5.1 | Robolectric 4.17 has an API 37 (`android-all-instrumented` 17) runtime |
+| Test | junit 4.13.2, robolectric 4.17, androidx.test:core 1.7.0, mockwebserver3 5.5.1 | Robolectric tests run on SDK 34 (`robolectric.properties`) so the build works on JDK 17. Runtimes for SDK 36+ need JDK 21 |
 | ktlint Gradle plugin | 14.2.0 | `ktlintCheck` runs as part of `check` |
 | SDK levels | `compileSdk` = `targetSdk` = 37, `minSdk` = 24 | 37 is the newest stable platform installed locally (`android-37.0`) and the AGP 9.4 maximum. 24 covers nearly all active devices, and nothing in the design needs a newer API |
 | Java level | `sourceCompatibility`/`targetCompatibility` 17, Kotlin `jvmTarget` 17 | Matches the AGP minimum JDK. The installed JDKs are 17 (Homebrew) and 25 (Android Studio JBR), and both can run the build |
@@ -127,8 +127,12 @@ construct (Constitution II).
      dispatcher stays injectable. `lifecycleScope` is cancelled at `ON_DESTROY` (FR-008), and a
      job launched on an already destroyed lifecycle never runs, so the placeholder stays.
    - Store the job in the view tag.
-4. The job awaits the target size (R5) and gets the bitmap (memory, then fetcher R10, then decoder
-   R6). If the view's job is still this job, it sets the bitmap.
+4. The job awaits the target size (R5). A laid-out view is normally attached, so the job looks up
+   `target.findViewTreeLifecycleOwner()` again. If that owner differs from the one whose scope runs
+   the job (a row bound before attachment inside a Fragment), the job is also cancelled when that
+   owner's `lifecycleScope` job completes (`invokeOnCompletion { job.cancel() }`, disposed in
+   `finally`; a handler on an already-cancelled scope runs at once). Then it gets the bitmap
+   (memory, then fetcher R10, then decoder R6). If the view's job is still this job, it sets it.
 5. On failure (any `Exception` except `CancellationException`, which is rethrown), it shows
    `error` if one was given, otherwise leaves the placeholder, and logs at WARN with tag
    `ImageLoader` (FR-011).
@@ -145,9 +149,10 @@ references the view (Constitution III).
 - A `WeakHashMap<ImageView, Job>` adds global state and still needs main-thread confinement.
 - Requiring callers to pass a `LifecycleOwner` adds an input the assignment does not list.
 
-Known limitation (documented in the README): inside a Fragment, a row bound before attachment
-falls back to the Activity lifecycle. The request still ends by completion or by the 30 s stall
-timeout, and the view is released after that.
+Ownership rule (documented in the README): a request belongs to the view-tree owner once the view
+is laid out, and before that to the owner found through the view's context. A row that is bound
+but never laid out waits for its size in the context owner's scope (the Activity). It starts no
+download and is released when the row is rebound or that owner is destroyed.
 
 ---
 
@@ -180,8 +185,9 @@ dispatcher:
 4. If the result is still more than the cover size, scale it down to the exact cover size with
    `Bitmap.createScaledBitmap` and recycle the intermediate. The image is never upscaled.
 
-When decoding fails, the request fails, and the disk entry for that URL is removed (R8), so bad
-data is never served again (FR-012, FR-015).
+When decoding fails, the disk entry for that URL is removed (R8). If the bytes came from disk, the
+request fetches once more, which now downloads (spec edge case "corrupt cache data … downloaded
+again", FR-015). If they came from the network, the request fails (FR-011, FR-012).
 
 **Rationale**: power-of-two sampling bounds decode memory for the 23.6 MB JPEG (FR-010). The exact
 cover scale cuts a 1920×1080 source in a 1080×600 row from 8.3 MB to about 2.6 MB, so roughly
@@ -313,8 +319,10 @@ download finished for `NETWORK`.
 - Each caller increments `waiters` and awaits. In `finally`, it decrements. When the count reaches
   0, the entry is removed and the deferred is cancelled if still running. A shared download
   therefore lives exactly as long as someone wants it (FR-008, FR-009).
-- A failed deferred is removed with its last waiter, so nothing negative is cached and the next
-  request retries (FR-012).
+- When the shared deferred completes, successfully or not, its entry is removed from the map even
+  if some waiters have not resumed yet. A later fetch therefore never joins a finished or failed
+  fetch: nothing negative is cached, the next request retries (FR-012), and a request whose disk
+  bytes fail to decode can fetch again and download (R6).
 
 **Rationale**: sharing per URL (not per decoded size) guarantees "at most one download per
 address" even for different view sizes. Reference counting stops abandoned downloads when rows
