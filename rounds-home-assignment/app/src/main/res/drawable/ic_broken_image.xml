@@ -1,8 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+    The vector is as large as a list row so that the row's centerCrop keeps the small icon in the
+    middle of it. It is drawn once per row, so the usual 200dp limit does not matter here.
+-->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
     android:width="360dp"
     android:height="200dp"
     android:tint="?attr/colorOnSurfaceVariant"
+    tools:ignore="VectorRaster"
     android:viewportWidth="360"
     android:viewportHeight="200">
     <group

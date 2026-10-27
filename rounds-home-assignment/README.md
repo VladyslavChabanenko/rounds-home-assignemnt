@@ -118,3 +118,93 @@ These are out of scope:
 - a configurable TTL or cache sizes
 - HTTP cache headers, custom headers or authentication
 - targets other than `ImageView`
+
+## The example app
+
+The app fetches a published JSON list of 50 entries and shows one row per entry: the entry's id
+and its image, loaded through the library. A progress indicator shows while the list loads. If the
+list cannot be loaded, an error message with a Retry button replaces it. An always-visible
+**Invalidate cache** action in the toolbar discards the cache, confirms with a Snackbar, and makes
+the visible rows load their images again without fetching the list again.
+
+The list is at `https://zipoapps-storage-test.nyc3.digitaloceanspaces.com/image_list.json`. It has
+45 distinct image URLs, so 5 appear twice, and 5 of them answer `403 Forbidden`. Those rows show a
+broken-image icon, and the rest of the list keeps working.
+
+### Architecture
+
+The app uses Android Views with ViewBinding and MVVM, with state flowing one way:
+
+```text
+ImageListActivity ──► ImageListViewModel ──► ImageListRepository ──► ImageListDataSource
+   (+ ImageListAdapter)   StateFlow<ImageListUiState>     parse on the IO       HTTP GET
+   renders state,         one-off ImageListEvent          dispatcher
+   forwards clicks
+```
+
+- `ImageListUiState` is a sealed interface: `Loading`, `Content(items)` and `Error`. The
+  Activity collects it with `repeatOnLifecycle(STARTED)`.
+- The ViewModel survives rotation, so the screen shows the same list without fetching it again.
+  `ImageListEvent.CacheInvalidated` goes through a channel, so rotation does not show the Snackbar
+  twice.
+- `ImageListParser` skips an entry that has no integer id or no image address, and fails when the
+  document is not a JSON array. The screen then shows the error state.
+- The list is fetched every time the app starts. It is kept in the ViewModel only and is not stored
+  for offline use, so an offline start shows the error state even when images are cached.
+- Dependencies are passed in through constructors. A `ViewModelProvider.Factory` builds the
+  ViewModel, and no DI framework is used.
+
+```text
+imageloader/   the library (namespace io.github.vladyslavchabanenko.imageloader)
+app/           the example app (applicationId ...imageloader.sample)
+  data/        ImageEntry, ImageListParser, ImageListDataSource, ImageListRepository
+  ui/          ImageListActivity, ImageListViewModel, ImageListUiState, ImageListAdapter
+specs/001-image-loader-library/   spec, plan, research, contracts, tasks and the manual checks
+```
+
+## Build, test and run
+
+You need JDK 17 or newer, and an Android SDK with platform `android-37`. Point to the SDK with
+`ANDROID_HOME`, or with `sdk.dir=` in `local.properties`, which Git ignores. Run the commands from
+this folder.
+
+```bash
+./gradlew build
+```
+
+This compiles both modules, runs all unit tests (the Java interop test too), Android Lint and
+ktlint. It is the definition of done.
+
+```bash
+./gradlew test
+```
+
+```bash
+./gradlew :imageloader:testDebugUnitTest --tests "*DiskCacheTest"
+```
+
+```bash
+./gradlew ktlintFormat
+```
+
+The tests run on the JVM. They use Robolectric for views and bitmaps, a local `MockWebServer` for
+the HTTP client, and fake clocks, downloaders and dispatchers, so none of them uses the real
+network or real time.
+
+To run the app on an emulator or device with API 24 or newer and internet access:
+
+```bash
+./gradlew :app:installDebug
+```
+
+Then open "Image Loader Sample". To watch the library's downloads and failures:
+
+```bash
+adb logcat -s ImageLoader
+```
+
+One `download` line is one network download. Scrolling slowly once through the whole list on a
+fresh install logs 45 of them, one per distinct URL, and 5 of those fail with `HTTP 403`.
+
+The manual checks, such as rotation, airplane mode and moving the device clock, are in
+[specs/001-image-loader-library/quickstart.md](specs/001-image-loader-library/quickstart.md).

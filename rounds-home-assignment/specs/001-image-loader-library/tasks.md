@@ -355,14 +355,14 @@ interop test. The app is the Kotlin caller.
 
 ## Phase 7: Polish & Cross-Cutting Concerns
 
-- [ ] T060 Complete `README.md` with the example-app half: module layout, the MVVM flow (View → `ImageListViewModel` → `ImageListRepository` → `ImageListDataSource`), the build, test and run commands and the logcat check from `specs/001-image-loader-library/quickstart.md`, and the list assumptions (fetched at each start, not stored offline)
-- [ ] T061 Sweep `imageloader/src/main/` and `app/src/main/` for constitution violations, and fix any:
+- [X] T060 Complete `README.md` with the example-app half: module layout, the MVVM flow (View → `ImageListViewModel` → `ImageListRepository` → `ImageListDataSource`), the build, test and run commands and the logcat check from `specs/001-image-loader-library/quickstart.md`, and the list assumptions (fetched at each start, not stored offline)
+- [X] T061 Sweep `imageloader/src/main/` and `app/src/main/` for constitution violations, and fix any:
   - `grep -rn '!!\|GlobalScope\|runBlocking\|Thread(' imageloader/src/main app/src/main` finds nothing
   - `Dispatchers.` appears only in `ImageLoader.get()` and `ImageListViewModel.Factory`
   - every `catch (e: Exception)` around suspend code is preceded by a rethrow of `CancellationException`
   - no hardcoded user-visible strings, colors or dimensions; no TODOs or commented-out code
-- [ ] T062 Run `./gradlew ktlintFormat`, then `./gradlew build`. Lint must report zero errors. Review `app/build/reports/lint-results-debug.html` and `imageloader/build/reports/lint-results-debug.html`, and fix or suppress (with a stated reason) every warning in the new code, for example `MissingApplicationIcon`
-- [ ] T063 Walk the full manual acceptance table, rows 1–10, of `specs/001-image-loader-library/quickstart.md` on an API 37 emulator, and on an API 24 emulator if one is available. Fix any failure before calling the feature done
+- [X] T062 Run `./gradlew ktlintFormat`, then `./gradlew build`. Lint must report zero errors. Review `app/build/reports/lint-results-debug.html` and `imageloader/build/reports/lint-results-debug.html`, and fix or suppress (with a stated reason) every warning in the new code, for example `MissingApplicationIcon`
+- [X] T063 Walk the full manual acceptance table, rows 1–10, of `specs/001-image-loader-library/quickstart.md` on an API 37 emulator, and on an API 24 emulator if one is available. Fix any failure before calling the feature done
 
 ---
 
