@@ -1,6 +1,8 @@
 package io.github.vladyslavchabanenko.imageloader
 
 import android.view.View
+import android.view.ViewTreeObserver
+import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
 
@@ -17,32 +19,78 @@ internal data class PixelSize(
 internal fun View.laidOutSizeOrNull(): PixelSize? = if (isLaidOut && !isLayoutRequested) contentSize(width, height) else null
 
 /**
- * Returns the laid-out size, or suspends until the next layout pass of this view. The layout
- * listener is removed when the wait ends or the caller is cancelled.
+ * Returns the laid-out size, or suspends until the view has one. Every listener is removed when
+ * the wait ends or the caller is cancelled.
  */
 internal suspend fun View.awaitSize(): PixelSize {
     laidOutSizeOrNull()?.let { return it }
     return suspendCancellableCoroutine { continuation ->
-        val listener =
-            object : View.OnLayoutChangeListener {
-                override fun onLayoutChange(
-                    v: View,
-                    left: Int,
-                    top: Int,
-                    right: Int,
-                    bottom: Int,
-                    oldLeft: Int,
-                    oldTop: Int,
-                    oldRight: Int,
-                    oldBottom: Int,
-                ) {
-                    v.removeOnLayoutChangeListener(this)
-                    // isLaidOut is set only after the listeners run, so the size comes from the arguments.
-                    continuation.resume(contentSize(right - left, bottom - top))
-                }
-            }
-        addOnLayoutChangeListener(listener)
-        continuation.invokeOnCancellation { removeOnLayoutChangeListener(listener) }
+        val waiter = SizeWaiter(this, continuation)
+        waiter.start()
+        continuation.invokeOnCancellation { waiter.stop() }
+    }
+}
+
+/**
+ * Resumes [continuation] once [view] has a size. A layout pass that changes the view's bounds
+ * notifies the layout listener. A view that is attached again with unchanged bounds, such as a
+ * recycled list row, is laid out without any notification, so the next draw resumes the wait too.
+ */
+private class SizeWaiter(
+    private val view: View,
+    private val continuation: CancellableContinuation<PixelSize>,
+) : View.OnLayoutChangeListener,
+    View.OnAttachStateChangeListener,
+    ViewTreeObserver.OnPreDrawListener {
+    private var observer = view.viewTreeObserver
+
+    fun start() {
+        view.addOnLayoutChangeListener(this)
+        view.addOnAttachStateChangeListener(this)
+        observer.addOnPreDrawListener(this)
+    }
+
+    fun stop() {
+        view.removeOnLayoutChangeListener(this)
+        view.removeOnAttachStateChangeListener(this)
+        removePreDrawListener(observer)
+        removePreDrawListener(view.viewTreeObserver)
+    }
+
+    override fun onLayoutChange(
+        v: View,
+        left: Int,
+        top: Int,
+        right: Int,
+        bottom: Int,
+        oldLeft: Int,
+        oldTop: Int,
+        oldRight: Int,
+        oldBottom: Int,
+    ) {
+        // isLaidOut is set only after the listeners run, so the size comes from the arguments.
+        finish(view.contentSize(right - left, bottom - top))
+    }
+
+    override fun onPreDraw(): Boolean {
+        view.laidOutSizeOrNull()?.let(::finish)
+        return true
+    }
+
+    // Attaching moves this listener from the view's own observer into the window's.
+    override fun onViewAttachedToWindow(v: View) {
+        observer = v.viewTreeObserver
+    }
+
+    override fun onViewDetachedFromWindow(v: View) = Unit
+
+    private fun finish(size: PixelSize) {
+        stop()
+        if (continuation.isActive) continuation.resume(size)
+    }
+
+    private fun removePreDrawListener(from: ViewTreeObserver) {
+        if (from.isAlive) from.removeOnPreDrawListener(this)
     }
 }
 

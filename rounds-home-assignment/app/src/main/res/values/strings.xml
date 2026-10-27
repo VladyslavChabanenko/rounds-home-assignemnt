@@ -1,4 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Image Loader Sample</string>
+    <string name="image_list_error">Couldn\'t load the image list. Check your connection and try again.</string>
+    <string name="retry">Retry</string>
+    <string name="image_id_label">ID: %1$d</string>
+    <string name="image_content_description">Image %1$d</string>
 </resources>

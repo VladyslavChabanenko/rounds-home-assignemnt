@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <dimen name="image_row_height">200dp</dimen>
+    <dimen name="list_item_spacing">8dp</dimen>
+    <dimen name="content_padding">16dp</dimen>
+</resources>

@@ -164,12 +164,22 @@ minus padding. Otherwise suspend on a `suspendCancellableCoroutine` that registe
 ≤ 0 after layout (for example `wrap_content`) falls back to that dimension of the display
 (`resources.displayMetrics`).
 
+The wait also registers a `ViewTreeObserver.OnPreDrawListener`. A recycled `RecyclerView` row is
+bound while detached, so it is not laid out. When it is attached again at another offset, its
+image view keeps its bounds inside the row, gets laid out, and `View.layout()` notifies none of
+its layout listeners. The layout listener alone then waits forever, which showed as rows stuck on
+the placeholder after the first few were recycled (found while walking quickstart row 4). The next
+draw of the window resumes the wait. The waiter follows the move of its listener from the view's
+own observer into the window's on attach, and removes every listener when the wait ends.
+
 **Rationale**: FR-010 needs the size before decoding. A cancellable await never leaves a listener
 holding the continuation, which `androidx.core.view.doOnLayout` would. The fallback keeps
-wrap-content views working without unbounded decoding.
+wrap-content views working without unbounded decoding. The pre-draw listener is the approach
+Glide and Coil use for the same reason.
 
 **Alternatives considered**: decoding at screen size always wastes memory on small rows. Using
-`ViewTreeObserver.OnPreDrawListener` works but needs `isAlive` checks and observer juggling.
+only `ViewTreeObserver.OnPreDrawListener` fails for views that are never attached (the
+Robolectric tests), so both listeners are kept.
 
 ---
 

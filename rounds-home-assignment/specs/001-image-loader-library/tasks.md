@@ -38,8 +38,9 @@ All paths are relative to the Gradle root `rounds-home-assignment/`, the folder 
 ## Deviations from the design documents
 
 These close gaps found while deriving the tasks. Items 1–3 and `PixelSize` are recorded in
-research.md (R4, R8, R9, R10) and data-model.md. The remaining items change only file lists:
-plan.md's Project Structure still lists `colors.xml` and omits the test helpers.
+research.md (R4, R8, R9, R10) and data-model.md. Items 4–6 change only file lists: plan.md's
+Project Structure still lists `colors.xml` and omits the test helpers. Item 7 was found while
+implementing and is recorded in research.md (R5).
 
 1. **Memory-cache entries expire too (G4, SC-003).** Research R9 caches bitmaps with no timestamp,
    so a process that stays alive past 4 hours would keep showing images from memory. Memory
@@ -55,6 +56,9 @@ plan.md's Project Structure still lists `colors.xml` and omits the test helpers.
 5. **No `colors.xml`.** Colors come from Material 3 theme attributes.
 6. **`.gitignore` also ignores `.gradle/` and `.idea/`**, so the Gradle root stays clean if it is
    delivered on its own.
+7. **`awaitSize()` also waits for a pre-draw callback (T013).** Found during T037: a recycled row
+   re-attached with unchanged bounds gets no layout notification, so the layout listener alone
+   never resumed. See research R5. `ViewSizeTest` reproduces it.
 
 ---
 
@@ -146,10 +150,10 @@ Rotation keeps the list (quickstart rows 1, 3, 4, 5, 6).
 
 ### Tests for User Story 1 ⚠️
 
-- [ ] T019 [P] [US1] Create `imageloader/src/test/kotlin/io/github/vladyslavchabanenko/imageloader/fakes/FakeLifecycleOwner.kt`:
+- [X] T019 [P] [US1] Create `imageloader/src/test/kotlin/io/github/vladyslavchabanenko/imageloader/fakes/FakeLifecycleOwner.kt`:
   - `class FakeLifecycleOwner(initialState: Lifecycle.State = Lifecycle.State.RESUMED) : LifecycleOwner`, backed by a `LifecycleRegistry` (created on the Robolectric main thread), with `fun destroy()` moving it to `DESTROYED`
   - `class LifecycleContext(base: Context, owner: LifecycleOwner) : ContextWrapper(base), LifecycleOwner by owner`, for the context fallback test
-- [ ] T020 [US1] Write `imageloader/src/test/kotlin/io/github/vladyslavchabanenko/imageloader/ImageLoaderTest.kt` (FR-001, 002, 007, 008, 010, 011):
+- [X] T020 [US1] Write `imageloader/src/test/kotlin/io/github/vladyslavchabanenko/imageloader/ImageLoaderTest.kt` (FR-001, 002, 007, 008, 010, 011):
   - Setup: `@RunWith(RobolectricTestRunner::class)`, `@GraphicsMode(NATIVE)` and `runTest`. A private `createLoader()` helper builds `ImageLoader` through its internal constructor with `FakeDownloader` and `StandardTestDispatcher(testScheduler)` as the main and default dispatchers. Later stories change only this helper. The target is an `ImageView(ApplicationProvider.getApplicationContext())` with `layout(0, 0, 200, 100)` and `setViewTreeLifecycleOwner(FakeLifecycleOwner())`. Use `ColorDrawable`s as placeholder and error drawables (assert identity) and `android.R.drawable.*` ids for the resource overload. Advance with `advanceUntilIdle()`, and also idle the Robolectric main looper if needed. Add a private `ImageView.relayout()` helper: `measure(makeMeasureSpec(200, EXACTLY), makeMeasureSpec(100, EXACTLY))`, then `layout(0, 0, 200, 100)`. Setting a drawable of a different intrinsic size calls `requestLayout()`, so after `load()` shows the placeholder, `laidOutSizeOrNull()` returns null and `awaitSize()` waits. An unattached view gets no layout pass, and `layout()` with unchanged bounds does not notify listeners without `measure()`. Call `relayout()` after each `load()` that should proceed and before any synchronous memory-hit assertion
   - The placeholder is set synchronously by both overloads, before any dispatcher advances
   - On success, the view shows a `BitmapDrawable` that covers 200×100 and is not larger than the cover size of the source
@@ -160,58 +164,58 @@ Rotation keeps the list (quickstart rows 1, 3, 4, 5, 6).
   - A view without a view-tree owner, created with a `LifecycleContext`, is cancelled when that owner is destroyed (R4 fallback)
   - Fragment case: a view with no view-tree owner, created with a `LifecycleContext` (owner A), gets view-tree owner B (`setViewTreeLifecycleOwner(B)`) before it is laid out. Destroying B during a gated download cancels the download (`cancelledCount == 1`) and leaves the placeholder, while A stays `RESUMED`
   - A view that is not laid out yet does not download until `relayout()` is called, and then decodes at that size
-- [ ] T021 [P] [US1] Write `app/src/test/java/io/github/vladyslavchabanenko/imageloader/sample/data/ImageListParserTest.kt`, with the fixture `app/src/test/resources/image_list.json`. Download the fixture once (`curl -fsSL https://zipoapps-storage-test.nyc3.digitaloceanspaces.com/image_list.json -o app/src/test/resources/image_list.json`). Tests never use the network. Cases:
+- [X] T021 [P] [US1] Write `app/src/test/java/io/github/vladyslavchabanenko/imageloader/sample/data/ImageListParserTest.kt`, with the fixture `app/src/test/resources/image_list.json`. Download the fixture once (`curl -fsSL https://zipoapps-storage-test.nyc3.digitaloceanspaces.com/image_list.json -o app/src/test/resources/image_list.json`). Tests never use the network. Cases:
   - the fixture parses to 50 entries with ids 0–49 in order and 45 distinct URLs, so duplicates are kept
   - `[]` gives an empty list, and unknown keys are ignored
   - these elements are skipped while their valid neighbors keep their order: `1` (not an object), missing `id`, `"id": null`, `"id": "abc"`, `"id": 1.5`, missing `imageUrl`, `"imageUrl": null` and `"imageUrl": "  "`
   - a root object `{}` and malformed text `[{` throw
-- [ ] T022 [P] [US1] Write `app/src/test/java/io/github/vladyslavchabanenko/imageloader/sample/data/ImageListRepositoryTest.kt` with a fake `ImageListDataSource` and `StandardTestDispatcher(testScheduler)` as the IO dispatcher. A two-entry JSON maps to two `ImageEntry`s. An `IOException` from the data source propagates. Malformed JSON throws
-- [ ] T023 [P] [US1] Write `app/src/test/java/io/github/vladyslavchabanenko/imageloader/sample/ui/MainDispatcherRule.kt`, a `TestWatcher` with `val testDispatcher = StandardTestDispatcher()` that calls `Dispatchers.setMain` and `resetMain`. Then write `app/src/test/java/io/github/vladyslavchabanenko/imageloader/sample/ui/ImageListViewModelTest.kt` with a call-counting fake data source (FR-020, FR-022):
+- [X] T022 [P] [US1] Write `app/src/test/java/io/github/vladyslavchabanenko/imageloader/sample/data/ImageListRepositoryTest.kt` with a fake `ImageListDataSource` and `StandardTestDispatcher(testScheduler)` as the IO dispatcher. A two-entry JSON maps to two `ImageEntry`s. An `IOException` from the data source propagates. Malformed JSON throws
+- [X] T023 [P] [US1] Write `app/src/test/java/io/github/vladyslavchabanenko/imageloader/sample/ui/MainDispatcherRule.kt`, a `TestWatcher` with `val testDispatcher = StandardTestDispatcher()` that calls `Dispatchers.setMain` and `resetMain`. Then write `app/src/test/java/io/github/vladyslavchabanenko/imageloader/sample/ui/ImageListViewModelTest.kt` with a call-counting fake data source (FR-020, FR-022):
   - the state starts as `Loading`, then becomes `Content` with items in source order
   - a failing fetch gives `Error`, and after fixing the fake, `onRetry()` goes through `Loading` to `Content`
   - a second collector of `uiState` gets the current `Content`, and the data source was called once
 
 ### Implementation for User Story 1: library
 
-- [ ] T024 [P] [US1] Create `imageloader/src/main/res/values/ids.xml` with `<item name="imageloader_request" type="id" />`, the view tag that holds the active request (FR-007)
-- [ ] T025 [US1] Implement `imageloader/src/main/java/io/github/vladyslavchabanenko/imageloader/ImageLoader.kt` for US1 (contract `contracts/image-loader-api.md`, research R3/R4). `invalidateCache()` is added in T049:
+- [X] T024 [P] [US1] Create `imageloader/src/main/res/values/ids.xml` with `<item name="imageloader_request" type="id" />`, the view tag that holds the active request (FR-007)
+- [X] T025 [US1] Implement `imageloader/src/main/java/io/github/vladyslavchabanenko/imageloader/ImageLoader.kt` for US1 (contract `contracts/image-loader-api.md`, research R3/R4). `invalidateCache()` is added in T049:
   - `public class ImageLoader internal constructor(downloader: Downloader, mainDispatcher: CoroutineDispatcher, defaultDispatcher: CoroutineDispatcher)` with `private val libraryScope = CoroutineScope(SupervisorJob() + mainDispatcher)`
   - Both public `load` overloads have exactly the contract's signatures, KDoc and annotations (`@MainThread`, `@JvmOverloads`, `@DrawableRes`). The resource overload resolves drawables with `target.context.getDrawable(id)` (`errorResId == 0` means no error image) and delegates to the `Drawable` overload
   - Request start: cancel `target.getTag(R.id.imageloader_request) as? Job`, then `target.setImageDrawable(placeholder)`. Pick the scope in this order: `target.findViewTreeLifecycleOwner()?.lifecycleScope`, then the first `LifecycleOwner` found by unwrapping `ContextWrapper.baseContext` from `target.context`, then `libraryScope`. Then `val job = scope.launch(mainDispatcher, start = CoroutineStart.LAZY) { … }`, `target.setTag(R.id.imageloader_request, job)` and `job.start()`
   - Job body: `target.awaitSize()`, then `downloader.download(url)`, then `withContext(defaultDispatcher) { BitmapDecoder.decode(...) }`. Call `target.setImageBitmap(bitmap)` only if the tag is still `coroutineContext[Job]`. Rethrow `CancellationException`. For any other `Exception`, show `error` if one was given (otherwise keep the placeholder) and `Log.w("ImageLoader", "Failed to load $url", e)`
   - Remember the owner whose scope was chosen. Right after `awaitSize()`, if `target.findViewTreeLifecycleOwner()` is non-null and is a different owner, register `treeOwner.lifecycleScope.coroutineContext.job.invokeOnCompletion { job.cancel() }` and call `dispose()` on the handle in `finally` (research R4)
   - `public companion object { @JvmStatic public fun get(context: Context): ImageLoader }` with KDoc: a lazily created, thread-safe singleton (double-checked locking on a `@Volatile` field) built from `context.applicationContext` with `HttpDownloader(Dispatchers.IO)`, `Dispatchers.Main` and `Dispatchers.Default`. This is the only place in the library that names `Dispatchers.*`
-- [ ] T026 [US1] Run `./gradlew :imageloader:testDebugUnitTest`. `HttpDownloaderTest`, `BitmapDecoderTest` and `ImageLoaderTest` must pass, and the report under `imageloader/build/reports/tests/` must list them, which confirms that `src/test/kotlin` is compiled
+- [X] T026 [US1] Run `./gradlew :imageloader:testDebugUnitTest`. `HttpDownloaderTest`, `BitmapDecoderTest` and `ImageLoaderTest` must pass, and the report under `imageloader/build/reports/tests/` must list them, which confirms that `src/test/kotlin` is compiled
 
 ### Implementation for User Story 1: example app
 
-- [ ] T027 [P] [US1] Create `app/src/main/java/io/github/vladyslavchabanenko/imageloader/sample/data/ImageEntry.kt`: `data class ImageEntry(val id: Long, val imageUrl: String)`
-- [ ] T028 [US1] Implement `app/src/main/java/io/github/vladyslavchabanenko/imageloader/sample/data/ImageListParser.kt` per research R14 and `contracts/image-list-json.md`, and make `ImageListParserTest` pass:
+- [X] T027 [P] [US1] Create `app/src/main/java/io/github/vladyslavchabanenko/imageloader/sample/data/ImageEntry.kt`: `data class ImageEntry(val id: Long, val imageUrl: String)`
+- [X] T028 [US1] Implement `app/src/main/java/io/github/vladyslavchabanenko/imageloader/sample/data/ImageListParser.kt` per research R14 and `contracts/image-list-json.md`, and make `ImageListParserTest` pass:
   - `object ImageListParser` with `fun parse(json: String): List<ImageEntry>`, using a private `Json { ignoreUnknownKeys = true }` and a private `@Serializable data class ImageEntryDto(val id: Long? = null, val imageUrl: String? = null)`
   - The root comes from `Json.parseToJsonElement`. If the root is not a `JsonArray`, throw `IllegalArgumentException`
   - Each element is decoded with `decodeFromJsonElement`. An element that throws `SerializationException` or `IllegalArgumentException`, or that has a null id or a null or blank URL, is skipped
-- [ ] T029 [P] [US1] Implement `app/src/main/java/io/github/vladyslavchabanenko/imageloader/sample/data/ImageListDataSource.kt`:
+- [X] T029 [P] [US1] Implement `app/src/main/java/io/github/vladyslavchabanenko/imageloader/sample/data/ImageListDataSource.kt`:
   - `fun interface ImageListDataSource { fun fetchImageListJson(): String }`, a blocking call that the repository runs on IO
   - `class HttpImageListDataSource(private val url: String = IMAGE_LIST_URL)`, a GET over `HttpURLConnection` with 30 s connect and read timeouts. Non-2xx throws `IOException`. It uses `use {}` and calls `disconnect()` in `finally`. A companion `const val IMAGE_LIST_URL` holds the spec URL (FR-018)
-- [ ] T030 [US1] Implement `app/src/main/java/io/github/vladyslavchabanenko/imageloader/sample/data/ImageListRepository.kt`: `class ImageListRepository(dataSource: ImageListDataSource, ioDispatcher: CoroutineDispatcher)` with `suspend fun loadImages(): List<ImageEntry> = withContext(ioDispatcher) { ImageListParser.parse(dataSource.fetchImageListJson()) }`. Make `ImageListRepositoryTest` pass
-- [ ] T031 [P] [US1] Add the list-screen resources under `app/src/main/res/`:
+- [X] T030 [US1] Implement `app/src/main/java/io/github/vladyslavchabanenko/imageloader/sample/data/ImageListRepository.kt`: `class ImageListRepository(dataSource: ImageListDataSource, ioDispatcher: CoroutineDispatcher)` with `suspend fun loadImages(): List<ImageEntry> = withContext(ioDispatcher) { ImageListParser.parse(dataSource.fetchImageListJson()) }`. Make `ImageListRepositoryTest` pass
+- [X] T031 [P] [US1] Add the list-screen resources under `app/src/main/res/`:
   - `app/src/main/res/values/strings.xml` adds `image_list_error` ("Couldn't load the image list. Check your connection and try again."), `retry` ("Retry"), `image_id_label` ("ID: %1$d") and `image_content_description` ("Image %1$d")
   - `app/src/main/res/values/dimens.xml` defines `image_row_height` (200dp), `list_item_spacing` (8dp) and `content_padding` (16dp)
   - `app/src/main/res/drawable/ic_image_placeholder.xml` and `app/src/main/res/drawable/ic_broken_image.xml` are vector drawables based on the Material "image" and "broken_image" icons. Each vector is sized to the row's aspect ratio (`360dp` × `200dp`, same viewport) with the 24-unit icon path centered by a `<group android:translateX/translateY>`, so `centerCrop` keeps the icon small. Tint with `android:tint="?attr/colorOnSurfaceVariant"`
-- [ ] T032 [US1] Create the layouts in `app/src/main/res/layout/`:
+- [X] T032 [US1] Create the layouts in `app/src/main/res/layout/`:
   - `app/src/main/res/layout/item_image.xml`: a vertical `LinearLayout` with `layout_marginBottom="@dimen/list_item_spacing"`. It holds an `ImageView` `@+id/image` (`match_parent` × `@dimen/image_row_height`, `scaleType="centerCrop"`, `android:background="?attr/colorSurfaceContainerHighest"`, `tools:ignore="ContentDescription"` with an XML comment saying the adapter sets it per row) and a `TextView` `@+id/id_label` (`padding="@dimen/content_padding"`, `textAppearance="?attr/textAppearanceBodyLarge"`)
   - `app/src/main/res/layout/activity_image_list.xml`: a `CoordinatorLayout` `@+id/root` containing an `AppBarLayout` with `android:fitsSystemWindows="true"` that holds a `MaterialToolbar` `@+id/toolbar` (`app:title="@string/app_name"`), and a `FrameLayout` with `app:layout_behavior="@string/appbar_scrolling_view_behavior"`. The `FrameLayout` holds a `RecyclerView` `@+id/list` (`app:layoutManager="androidx.recyclerview.widget.LinearLayoutManager"`, `clipToPadding="false"`, `visibility="gone"`), a centered indeterminate `CircularProgressIndicator` `@+id/progress`, and a centered vertical `LinearLayout` `@+id/error_group` (`visibility="gone"`, padded) containing a `TextView` `@+id/error_message` (`@string/image_list_error`, centered text) and a `MaterialButton` `@+id/retry_button` (`@string/retry`)
-- [ ] T033 [P] [US1] Create `app/src/main/java/io/github/vladyslavchabanenko/imageloader/sample/ui/ImageListUiState.kt`: `sealed interface ImageListUiState` with `data object Loading`, `data class Content(val items: List<ImageListItem>)` and `data object Error`, plus `data class ImageListItem(val id: Long, val imageUrl: String)` (data-model.md)
-- [ ] T034 [US1] Implement `app/src/main/java/io/github/vladyslavchabanenko/imageloader/sample/ui/ImageListViewModel.kt` (research R13), and make `ImageListViewModelTest` pass:
+- [X] T033 [P] [US1] Create `app/src/main/java/io/github/vladyslavchabanenko/imageloader/sample/ui/ImageListUiState.kt`: `sealed interface ImageListUiState` with `data object Loading`, `data class Content(val items: List<ImageListItem>)` and `data object Error`, plus `data class ImageListItem(val id: Long, val imageUrl: String)` (data-model.md)
+- [X] T034 [US1] Implement `app/src/main/java/io/github/vladyslavchabanenko/imageloader/sample/ui/ImageListViewModel.kt` (research R13), and make `ImageListViewModelTest` pass:
   - `class ImageListViewModel(private val repository: ImageListRepository) : ViewModel()` with a private `MutableStateFlow<ImageListUiState>(Loading)` exposed as `val uiState: StateFlow<ImageListUiState>`
   - `init` loads, and `fun onRetry()` loads again. Loading sets `Loading`, then launches in `viewModelScope`. It maps entries to `ImageListItem`s in a `Content` state. It rethrows `CancellationException` and turns any other `Exception` into `Error`
   - `companion object { val Factory: ViewModelProvider.Factory = viewModelFactory { initializer { ImageListViewModel(ImageListRepository(HttpImageListDataSource(), Dispatchers.IO)) } } }`
-- [ ] T035 [US1] Implement `app/src/main/java/io/github/vladyslavchabanenko/imageloader/sample/ui/ImageListAdapter.kt`: `class ImageListAdapter(private val imageLoader: ImageLoader) : ListAdapter<ImageListItem, ImageListAdapter.ViewHolder>(DiffCallback)`. The `ViewHolder` uses `ItemImageBinding`. `bind(item)` sets `id_label` from `R.string.image_id_label`, sets the image `contentDescription` from `R.string.image_content_description`, and calls `imageLoader.load(item.imageUrl, binding.image, R.drawable.ic_image_placeholder, R.drawable.ic_broken_image)` (FR-019). `DiffCallback` compares items by `id` and contents by equality
-- [ ] T036 [US1] Implement `app/src/main/java/io/github/vladyslavchabanenko/imageloader/sample/ui/ImageListActivity.kt`, and register it in `app/src/main/AndroidManifest.xml` with `android:exported="true"` and a MAIN/LAUNCHER intent filter:
+- [X] T035 [US1] Implement `app/src/main/java/io/github/vladyslavchabanenko/imageloader/sample/ui/ImageListAdapter.kt`: `class ImageListAdapter(private val imageLoader: ImageLoader) : ListAdapter<ImageListItem, ImageListAdapter.ViewHolder>(DiffCallback)`. The `ViewHolder` uses `ItemImageBinding`. `bind(item)` sets `id_label` from `R.string.image_id_label`, sets the image `contentDescription` from `R.string.image_content_description`, and calls `imageLoader.load(item.imageUrl, binding.image, R.drawable.ic_image_placeholder, R.drawable.ic_broken_image)` (FR-019). `DiffCallback` compares items by `id` and contents by equality
+- [X] T036 [US1] Implement `app/src/main/java/io/github/vladyslavchabanenko/imageloader/sample/ui/ImageListActivity.kt`, and register it in `app/src/main/AndroidManifest.xml` with `android:exported="true"` and a MAIN/LAUNCHER intent filter:
   - `AppCompatActivity`. Call `enableEdgeToEdge()` before `super.onCreate`, then inflate `ActivityImageListBinding`. Create the view model with `by viewModels { ImageListViewModel.Factory }`
   - The adapter is `ImageListAdapter(ImageLoader.get(this))` with `stateRestorationPolicy = PREVENT_WHEN_EMPTY`. `ViewCompat.setOnApplyWindowInsetsListener(binding.list)` applies the left, right and bottom `systemBars()` insets as padding
   - The Retry button calls `viewModel.onRetry()`. In `lifecycleScope.launch { repeatOnLifecycle(STARTED) { … } }`, collect `uiState` and render it: `progress` is visible for `Loading`, `list` for `Content` (with `submitList(items)`), and `error_group` for `Error`
-- [ ] T037 [US1] Validate US1: `./gradlew build` passes. Then `./gradlew :app:installDebug` on an emulator and walk rows 1, 3, 4, 5 and 6 of `specs/001-image-loader-library/quickstart.md`. Without caching, scrolling back downloads again. US2 fixes that
+- [X] T037 [US1] Validate US1: `./gradlew build` passes. Then `./gradlew :app:installDebug` on an emulator and walk rows 1, 3, 4, 5 and 6 of `specs/001-image-loader-library/quickstart.md`. Without caching, scrolling back downloads again. US2 fixes that
 
 **Checkpoint**: US1 works end to end and can be demoed as the MVP.
 
