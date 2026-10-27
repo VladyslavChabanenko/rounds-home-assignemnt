@@ -39,8 +39,8 @@ All paths are relative to the Gradle root `rounds-home-assignment/`, the folder 
 
 These close gaps found while deriving the tasks. Items 1–3 and `PixelSize` are recorded in
 research.md (R4, R8, R9, R10) and data-model.md. Items 4–6 change only file lists: plan.md's
-Project Structure still lists `colors.xml` and omits the test helpers. Item 7 was found while
-implementing and is recorded in research.md (R5).
+Project Structure still lists `colors.xml` and omits the test helpers. Items 7 and 8 were found
+while implementing. Item 7 is recorded in research.md (R5).
 
 1. **Memory-cache entries expire too (G4, SC-003).** Research R9 caches bitmaps with no timestamp,
    so a process that stays alive past 4 hours would keep showing images from memory. Memory
@@ -59,6 +59,10 @@ implementing and is recorded in research.md (R5).
 7. **`awaitSize()` also waits for a pre-draw callback (T013).** Found during T037: a recycled row
    re-attached with unchanged bounds gets no layout notification, so the layout listener alone
    never resumed. See research R5. `ViewSizeTest` reproduces it.
+8. **`ImageLoader`'s constructor is `private` (T025, T044, T058).** Kotlin compiles an `internal`
+   constructor to a JVM-public one, so `javap` showed Java callers a constructor taking internal
+   types and dispatchers. Instances come from the public `get` and an internal `create` used by
+   tests. The contract snippet is updated to match.
 
 ---
 
@@ -335,15 +339,15 @@ interop test. The app is the Kotlin caller.
 
 ### Tests for User Story 4 ⚠️
 
-- [ ] T057 [US4] Write `imageloader/src/test/java/io/github/vladyslavchabanenko/imageloader/ImageLoaderJavaInteropTest.java` (Robolectric, plain Java, FR-017, SC-008):
+- [X] T057 [US4] Write `imageloader/src/test/java/io/github/vladyslavchabanenko/imageloader/ImageLoaderJavaInteropTest.java` (Robolectric, plain Java, FR-017, SC-008):
   - `ImageLoader.get(ApplicationProvider.getApplicationContext())` returns the same instance twice
   - On a `new ImageView(context)` that is never laid out (so no download starts), call all four `load` overloads: `(url, view, android.R.drawable.ic_menu_gallery)`, `(…, ic_menu_gallery, android.R.drawable.ic_delete)`, `(url, view, placeholder)` and `(url, view, placeholder, error)`, plus the null-error form. After each call, assert that the placeholder is showing (`assertSame` for `Drawable`s, `assertNotNull` for resource ids)
   - `invalidateCache()` returns without throwing
 
 ### Implementation for User Story 4
 
-- [ ] T058 [US4] Check the public surface of `imageloader/src/main/java/io/github/vladyslavchabanenko/imageloader/ImageLoader.kt` against `contracts/image-loader-api.md`. Run `javap -public` on the compiled class (find it with `find imageloader/build -name ImageLoader.class`). It must show exactly the static `get` and the four `load` and one `invalidateCache` signatures from the contract. Every public declaration must have KDoc, and no `suspend`, `Result`, `Duration` or function type may appear. Fix any mismatch
-- [ ] T059 [P] [US4] Write the library half of `README.md`: what the library does; Kotlin and Java usage (from `contracts/image-loader-api.md`); behavioral guarantees G1–G11 grouped by threading, errors, lifecycle and caching (4 h TTL, memory 1/8 heap, disk 100 MB, `invalidateCache()`); the ownership rule from research R4; and the "Explicitly not provided" list
+- [X] T058 [US4] Check the public surface of `imageloader/src/main/java/io/github/vladyslavchabanenko/imageloader/ImageLoader.kt` against `contracts/image-loader-api.md`. Run `javap -public` on the compiled class (find it with `find imageloader/build -name ImageLoader.class`). It must show exactly the static `get` and the four `load` and one `invalidateCache` signatures from the contract. Every public declaration must have KDoc, and no `suspend`, `Result`, `Duration` or function type may appear. Fix any mismatch
+- [X] T059 [P] [US4] Write the library half of `README.md`: what the library does; Kotlin and Java usage (from `contracts/image-loader-api.md`); behavioral guarantees G1–G11 grouped by threading, errors, lifecycle and caching (4 h TTL, memory 1/8 heap, disk 100 MB, `invalidateCache()`); the ownership rule from research R4; and the "Explicitly not provided" list
 
 **Checkpoint**: all four stories are complete.
 

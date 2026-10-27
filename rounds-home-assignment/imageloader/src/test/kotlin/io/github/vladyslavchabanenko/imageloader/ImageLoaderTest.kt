@@ -61,7 +61,7 @@ class ImageLoaderTest {
         decodeDispatcher: CoroutineDispatcher? = null,
     ): ImageLoader {
         val dispatcher = StandardTestDispatcher(testScheduler)
-        return ImageLoader(downloader, cache, clock, MEMORY_CACHE_BYTES, dispatcher, dispatcher, decodeDispatcher ?: dispatcher)
+        return ImageLoader.create(downloader, cache, clock, MEMORY_CACHE_BYTES, dispatcher, dispatcher, decodeDispatcher ?: dispatcher)
     }
 
     private fun newImageView(

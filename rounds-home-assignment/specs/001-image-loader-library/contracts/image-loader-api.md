@@ -14,7 +14,7 @@ Package: `io.github.vladyslavchabanenko.imageloader`
  * Downloads images into [ImageView]s, with a memory cache and a disk cache valid for 4 hours.
  * Obtain the process-wide instance with [get].
  */
-public class ImageLoader internal constructor(/* internal collaborators */) {
+public class ImageLoader private constructor(/* internal collaborators */) {
 
     /**
      * Shows [placeholderResId] in [target] immediately, then the image at [url] once it is ready.

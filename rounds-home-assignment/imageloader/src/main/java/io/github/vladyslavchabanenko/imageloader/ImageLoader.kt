@@ -31,7 +31,7 @@ import java.util.concurrent.atomic.AtomicInteger
  * Downloads images into [ImageView]s, with a memory cache and a disk cache valid for 4 hours.
  * Obtain the process-wide instance with [get].
  */
-public class ImageLoader internal constructor(
+public class ImageLoader private constructor(
     downloader: Downloader,
     private val diskCache: DiskCache,
     private val clock: Clock,
@@ -223,7 +223,7 @@ public class ImageLoader internal constructor(
                     val clock = Clock { System.currentTimeMillis() }
                     val diskCache = DiskCache(lazy { File(appContext.cacheDir, CACHE_DIRECTORY) }, clock)
                     val memoryCacheBytes = (Runtime.getRuntime().maxMemory() / 8).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
-                    ImageLoader(
+                    create(
                         HttpDownloader(Dispatchers.IO),
                         diskCache,
                         clock,
@@ -234,6 +234,17 @@ public class ImageLoader internal constructor(
                     )
                 }.also { instance = it }
             }
+
+        // The constructor is private, so Java callers see no way to build a loader from internal types.
+        internal fun create(
+            downloader: Downloader,
+            diskCache: DiskCache,
+            clock: Clock,
+            memoryCacheMaxBytes: Int,
+            mainDispatcher: CoroutineDispatcher,
+            ioDispatcher: CoroutineDispatcher,
+            defaultDispatcher: CoroutineDispatcher,
+        ): ImageLoader = ImageLoader(downloader, diskCache, clock, memoryCacheMaxBytes, mainDispatcher, ioDispatcher, defaultDispatcher)
     }
 }
 
