@@ -7,6 +7,7 @@ import android.graphics.drawable.Drawable
 import android.util.Log
 import android.util.LruCache
 import android.widget.ImageView
+import androidx.annotation.AnyThread
 import androidx.annotation.DrawableRes
 import androidx.annotation.MainThread
 import androidx.lifecycle.LifecycleOwner
@@ -24,6 +25,7 @@ import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Downloads images into [ImageView]s, with a memory cache and a disk cache valid for 4 hours.
@@ -39,6 +41,9 @@ public class ImageLoader internal constructor(
     private val defaultDispatcher: CoroutineDispatcher,
 ) {
     private val libraryScope = CoroutineScope(SupervisorJob() + mainDispatcher)
+
+    // Counts invalidations. A request that started before one never reuses cached data after it.
+    private val generation = AtomicInteger(0)
 
     // One thread at a time, in order, so DiskCache needs no locks and a clear() runs before later reads.
     private val diskDispatcher = ioDispatcher.limitedParallelism(1)
@@ -82,6 +87,7 @@ public class ImageLoader internal constructor(
         error: Drawable? = null,
     ) {
         (target.getTag(R.id.imageloader_request) as? Job)?.cancel()
+        val requestGeneration = generation.get()
 
         val cached = target.laidOutSizeOrNull()?.let { lookUpMemory(MemoryKey(url, it.width, it.height)) }
         if (cached != null) {
@@ -101,7 +107,7 @@ public class ImageLoader internal constructor(
                 try {
                     val size = target.awaitSize()
                     treeOwnerWatch = cancelWhenTreeOwnerDestroyed(target, owner, self)
-                    val bitmap = loadBitmap(url, size)
+                    val bitmap = loadBitmap(url, size, requestGeneration)
                     if (isCurrent()) target.setImageBitmap(bitmap)
                 } catch (e: CancellationException) {
                     throw e
@@ -116,19 +122,38 @@ public class ImageLoader internal constructor(
         job.start()
     }
 
-    /** The bitmap from memory, else decoded from the fetched bytes. Bytes from disk that are not an image are fetched once more. */
+    /** Discards every cached image (memory and disk). Subsequent loads download again. */
+    @AnyThread
+    public fun invalidateCache() {
+        synchronized(memoryCache) {
+            generation.incrementAndGet()
+            memoryCache.evictAll()
+        }
+        libraryScope.launch(diskDispatcher) { diskCache.clear() }
+    }
+
+    /**
+     * The bitmap from memory, else decoded from the fetched bytes. A result from disk is not used when the
+     * cache was invalidated meanwhile, and bytes from disk that are not an image are fetched once more.
+     */
     private suspend fun loadBitmap(
         url: String,
         size: PixelSize,
+        startGeneration: Int,
     ): Bitmap {
         val key = MemoryKey(url, size.width, size.height)
         lookUpMemory(key)?.let { return it.bitmap }
+        var requestGeneration = startGeneration
         var retried = false
         while (true) {
-            val result = fetcher.fetch(url)
+            val result = fetcher.fetch(url, requestGeneration)
             try {
                 val bitmap = withContext(defaultDispatcher) { BitmapDecoder.decode(result.bytes, size.width, size.height) }
-                memoryCache.put(key, MemoryEntry(bitmap, result.downloadedAtMillis))
+                if (result.source == Source.DISK && requestGeneration != generation.get()) {
+                    requestGeneration = generation.get()
+                    continue
+                }
+                putInMemory(key, MemoryEntry(bitmap, result.downloadedAtMillis), requestGeneration)
                 return bitmap
             } catch (e: InvalidImageException) {
                 // Queued on the serialized disk dispatcher before the next fetch reads the disk.
@@ -136,6 +161,17 @@ public class ImageLoader internal constructor(
                 if (result.source != Source.DISK || retried) throw e
                 retried = true
             }
+        }
+    }
+
+    // Under the same lock as invalidateCache(), so an invalidation never leaves an older entry behind.
+    private fun putInMemory(
+        key: MemoryKey,
+        entry: MemoryEntry,
+        requestGeneration: Int,
+    ) {
+        synchronized(memoryCache) {
+            if (requestGeneration == generation.get()) memoryCache.put(key, entry)
         }
     }
 

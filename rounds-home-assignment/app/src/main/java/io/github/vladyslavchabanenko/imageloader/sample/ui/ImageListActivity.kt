@@ -12,7 +12,9 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.recyclerview.widget.RecyclerView
+import com.google.android.material.snackbar.Snackbar
 import io.github.vladyslavchabanenko.imageloader.ImageLoader
+import io.github.vladyslavchabanenko.imageloader.sample.R
 import io.github.vladyslavchabanenko.imageloader.sample.databinding.ActivityImageListBinding
 import kotlinx.coroutines.launch
 
@@ -38,12 +40,34 @@ class ImageListActivity : AppCompatActivity() {
             view.updatePadding(left = bars.left, right = bars.right, bottom = bars.bottom)
             insets
         }
+        // In landscape the navigation bar sits beside the screen, over the toolbar's action.
+        ViewCompat.setOnApplyWindowInsetsListener(binding.toolbar) { view, insets ->
+            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            view.updatePadding(left = bars.left, right = bars.right)
+            insets
+        }
         binding.retryButton.setOnClickListener { viewModel.onRetry() }
+        binding.toolbar.inflateMenu(R.menu.image_list)
+        binding.toolbar.setOnMenuItemClickListener { item ->
+            if (item.itemId == R.id.action_invalidate_cache) {
+                viewModel.onInvalidateCacheClicked()
+                true
+            } else {
+                false
+            }
+        }
 
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
-                viewModel.uiState.collect(::render)
+                launch { viewModel.uiState.collect(::render) }
+                launch { viewModel.events.collect(::handle) }
             }
+        }
+    }
+
+    private fun handle(event: ImageListEvent) {
+        when (event) {
+            ImageListEvent.CacheInvalidated -> Snackbar.make(binding.root, R.string.cache_invalidated, Snackbar.LENGTH_SHORT).show()
         }
     }
 

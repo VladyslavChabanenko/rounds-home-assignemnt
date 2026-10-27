@@ -50,8 +50,8 @@ class ImageFetcherTest {
             val fetcher = createFetcher()
             val gate = downloader.gate(url)
 
-            val first = async { fetcher.fetch(url) }
-            val second = async { fetcher.fetch(url) }
+            val first = async { fetcher.fetch(url, 0) }
+            val second = async { fetcher.fetch(url, 0) }
             advanceUntilIdle()
             gate.complete(bytes)
             advanceUntilIdle()
@@ -69,7 +69,7 @@ class ImageFetcherTest {
             diskCache.put(url, bytes, clock.now)
             clock.advanceBy(60_000)
 
-            val result = fetcher.fetch(url)
+            val result = fetcher.fetch(url, 0)
 
             assertEquals(Source.DISK, result.source)
             assertEquals(1_000_000L, result.downloadedAtMillis)
@@ -83,7 +83,7 @@ class ImageFetcherTest {
             val fetcher = createFetcher()
             downloader.succeed(url, bytes)
 
-            val result = fetcher.fetch(url)
+            val result = fetcher.fetch(url, 0)
 
             assertEquals(Source.NETWORK, result.source)
             assertEquals(clock.now, result.downloadedAtMillis)
@@ -98,8 +98,8 @@ class ImageFetcherTest {
         runTest {
             val fetcher = createFetcher()
             val gate = downloader.gate(url)
-            val first = async { runCatching { fetcher.fetch(url) } }
-            val second = async { runCatching { fetcher.fetch(url) } }
+            val first = async { runCatching { fetcher.fetch(url, 0) } }
+            val second = async { runCatching { fetcher.fetch(url, 0) } }
             advanceUntilIdle()
 
             gate.completeExceptionally(IOException("HTTP 403"))
@@ -109,7 +109,7 @@ class ImageFetcherTest {
             assertTrue(second.await().exceptionOrNull() is IOException)
             assertNull(diskCache.get(url))
             downloader.succeed(url, bytes)
-            assertArrayEquals(bytes, fetcher.fetch(url).bytes)
+            assertArrayEquals(bytes, fetcher.fetch(url, 0).bytes)
             assertEquals(2, downloader.callCount(url))
         }
 
@@ -118,7 +118,7 @@ class ImageFetcherTest {
         runTest {
             val fetcher = createFetcher()
             downloader.gate(url)
-            val waiter = launch { fetcher.fetch(url) }
+            val waiter = launch { fetcher.fetch(url, 0) }
             advanceUntilIdle()
 
             waiter.cancel()
@@ -132,8 +132,8 @@ class ImageFetcherTest {
         runTest {
             val fetcher = createFetcher()
             val gate = downloader.gate(url)
-            val cancelled = launch { fetcher.fetch(url) }
-            val remaining = async { fetcher.fetch(url) }
+            val cancelled = launch { fetcher.fetch(url, 0) }
+            val remaining = async { fetcher.fetch(url, 0) }
             advanceUntilIdle()
 
             cancelled.cancel()
@@ -154,7 +154,7 @@ class ImageFetcherTest {
             val fetcher = createFetcher(unwritable)
             downloader.succeed(url, bytes)
 
-            val result = fetcher.fetch(url)
+            val result = fetcher.fetch(url, 0)
 
             assertArrayEquals(bytes, result.bytes)
             assertNull(unwritable.get(url))
@@ -168,17 +168,53 @@ class ImageFetcherTest {
             // Its dispatcher is never advanced, so this waiter stays suspended after the fetch fails.
             // It is outside the test scope, which would otherwise wait for it to finish.
             val pausedScope = CoroutineScope(StandardTestDispatcher())
-            val stuckWaiter = pausedScope.launch(start = CoroutineStart.UNDISPATCHED) { fetcher.fetch(url) }
+            val stuckWaiter = pausedScope.launch(start = CoroutineStart.UNDISPATCHED) { fetcher.fetch(url, 0) }
             advanceUntilIdle()
 
             gate.completeExceptionally(IOException("HTTP 500"))
             advanceUntilIdle()
             downloader.succeed(url, bytes)
-            val result = fetcher.fetch(url)
+            val result = fetcher.fetch(url, 0)
 
             assertFalse(stuckWaiter.isCompleted)
             assertArrayEquals(bytes, result.bytes)
             assertEquals(2, downloader.callCount(url))
             pausedScope.cancel()
+        }
+
+    @Test
+    fun aFetchOfANewGenerationStartsItsOwnDownloadWhileTheOldOneIsInFlight() =
+        runTest {
+            val fetcher = createFetcher()
+            val gate = downloader.gate(url)
+            val oldGeneration = async { fetcher.fetch(url, 0) }
+            advanceUntilIdle()
+            assertEquals(1, downloader.callCount(url))
+
+            val newGeneration = async { fetcher.fetch(url, 1) }
+            advanceUntilIdle()
+            gate.complete(bytes)
+            advanceUntilIdle()
+
+            assertEquals(2, downloader.callCount(url))
+            assertArrayEquals(bytes, oldGeneration.await().bytes)
+            assertArrayEquals(bytes, newGeneration.await().bytes)
+        }
+
+    @Test
+    fun concurrentFetchesOfTheSameNewGenerationShareOneDownload() =
+        runTest {
+            val fetcher = createFetcher()
+            val gate = downloader.gate(url)
+
+            val first = async { fetcher.fetch(url, 1) }
+            val second = async { fetcher.fetch(url, 1) }
+            advanceUntilIdle()
+            gate.complete(bytes)
+            advanceUntilIdle()
+
+            assertEquals(1, downloader.callCount(url))
+            assertArrayEquals(bytes, first.await().bytes)
+            assertArrayEquals(bytes, second.await().bytes)
         }
 }

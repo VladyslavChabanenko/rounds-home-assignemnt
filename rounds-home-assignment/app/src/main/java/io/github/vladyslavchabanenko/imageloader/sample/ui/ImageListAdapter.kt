@@ -45,5 +45,13 @@ class ImageListAdapter(
             oldItem: ImageListItem,
             newItem: ImageListItem,
         ): Boolean = oldItem == newItem
+
+        // A payload lets the item animator rebind the row in place, without a crossfade.
+        override fun getChangePayload(
+            oldItem: ImageListItem,
+            newItem: ImageListItem,
+        ): Any? = if (oldItem.copy(cacheGeneration = newItem.cacheGeneration) == newItem) RELOAD else null
     }
+
+    private object RELOAD
 }

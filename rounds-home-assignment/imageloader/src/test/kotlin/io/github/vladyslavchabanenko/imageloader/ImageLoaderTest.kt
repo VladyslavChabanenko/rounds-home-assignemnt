@@ -16,8 +16,10 @@ import io.github.vladyslavchabanenko.imageloader.fakes.FakeDownloader
 import io.github.vladyslavchabanenko.imageloader.fakes.FakeLifecycleOwner
 import io.github.vladyslavchabanenko.imageloader.fakes.LifecycleContext
 import io.github.vladyslavchabanenko.imageloader.fakes.jpegBytes
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.TestCoroutineScheduler
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
@@ -54,9 +56,12 @@ class ImageLoaderTest {
 
     private fun newDiskCache() = DiskCache(lazy { temporaryFolder.root }, clock)
 
-    private fun TestScope.createLoader(cache: DiskCache = diskCache): ImageLoader {
+    private fun TestScope.createLoader(
+        cache: DiskCache = diskCache,
+        decodeDispatcher: CoroutineDispatcher? = null,
+    ): ImageLoader {
         val dispatcher = StandardTestDispatcher(testScheduler)
-        return ImageLoader(downloader, cache, clock, MEMORY_CACHE_BYTES, dispatcher, dispatcher, dispatcher)
+        return ImageLoader(downloader, cache, clock, MEMORY_CACHE_BYTES, dispatcher, dispatcher, decodeDispatcher ?: dispatcher)
     }
 
     private fun newImageView(
@@ -424,6 +429,72 @@ class ImageLoaderTest {
             assertEquals(1, downloader.callCount(url))
             assertNotSame(errorDrawable, view.drawable)
             assertMostlyRed(view)
+        }
+
+    @Test
+    fun afterInvalidationALoadShowsThePlaceholderAndDownloadsOnce() =
+        runTest {
+            val loader = createLoader()
+            val view = newImageView()
+            downloader.succeed(url, jpegBytes(400, 200, Color.RED))
+            loadAndSettle(loader, view)
+            assertEquals(1, downloader.callCount(url))
+
+            loader.invalidateCache()
+            view.relayout()
+            loader.load(url, view, placeholder, errorDrawable)
+            assertSame(placeholder, view.drawable)
+            view.relayout()
+            advanceUntilIdle()
+
+            assertEquals(2, downloader.callCount(url))
+            assertMostlyRed(view)
+        }
+
+    @Test
+    fun aDiskSourcedImageInFlightDuringInvalidationIsNeverShownAndTheImageIsDownloaded() =
+        runTest {
+            val decodeScheduler = TestCoroutineScheduler()
+            val loader = createLoader(decodeDispatcher = StandardTestDispatcher(decodeScheduler))
+            val view = newImageView()
+            diskCache.put(url, jpegBytes(400, 200, Color.RED), clock.now)
+            downloader.succeed(url, jpegBytes(400, 200, Color.BLUE))
+
+            // The disk read has happened and decoding is parked on its own scheduler.
+            loader.load(url, view, placeholder, errorDrawable)
+            view.relayout()
+            advanceUntilIdle()
+            loader.invalidateCache()
+            advanceUntilIdle()
+            decodeScheduler.advanceUntilIdle()
+            advanceUntilIdle()
+
+            assertSame(placeholder, view.drawable)
+            assertEquals(1, downloader.callCount(url))
+            decodeScheduler.advanceUntilIdle()
+            advanceUntilIdle()
+            assertMostlyBlue(view)
+        }
+
+    @Test
+    fun aDownloadInFlightDuringInvalidationIsShownButNotKeptInMemory() =
+        runTest {
+            val loader = createLoader()
+            val view = newImageView()
+            val gate = downloader.gate(url)
+            loader.load(url, view, placeholder, errorDrawable)
+            view.relayout()
+            advanceUntilIdle()
+
+            loader.invalidateCache()
+            advanceUntilIdle()
+            gate.complete(jpegBytes(400, 200, Color.BLUE))
+            advanceUntilIdle()
+
+            assertMostlyBlue(view)
+            val otherView = newImageView()
+            loader.load(url, otherView, placeholder, errorDrawable)
+            assertSame(placeholder, otherView.drawable)
         }
 
     private companion object {
